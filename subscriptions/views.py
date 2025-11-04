@@ -1,0 +1,584 @@
+from rest_framework import viewsets, status, filters
+from rest_framework.decorators import action
+from rest_framework.response import Response
+from rest_framework.permissions import IsAuthenticated, AllowAny, IsAdminUser
+from django_filters.rest_framework import DjangoFilterBackend
+from django.db.models import Q, Sum, Count
+from django.utils import timezone
+from dateutil.relativedelta import relativedelta
+import uuid
+
+from .models import SubscriptionPlan, Subscription, Payment
+from listings.models import Listing
+from .serializers import (
+    SubscriptionPlanListSerializer,
+    SubscriptionPlanDetailSerializer,
+    SubscriptionPlanCreateUpdateSerializer,
+    SubscriptionListSerializer,
+    SubscriptionDetailSerializer,
+    SubscriptionCreateSerializer,
+    SubscriptionUpdateSerializer,
+    PaymentListSerializer,
+    PaymentDetailSerializer,
+    PaymentInitiateSerializer,
+    PaymentCallbackSerializer,
+    PaymentStatusUpdateSerializer,
+    SubscriptionStatsSerializer,
+    UserSubscriptionStatusSerializer
+)
+from .permissions import IsOwner, IsAdmin
+
+
+# ============================================================================
+# SubscriptionPlan ViewSet
+# ============================================================================
+
+class SubscriptionPlanViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet pour les plans d'abonnement.
+    - Public: voir les plans actifs
+    - Admin: CRUD complet
+    """
+    queryset = SubscriptionPlan.objects.all()
+    filter_backends = [filters.OrderingFilter]
+    ordering_fields = ['duration_months', 'price']
+    ordering = ['duration_months']
+    
+    def get_queryset(self):
+        """Filtrer les plans selon le rôle"""
+        if self.request.user.is_staff:
+            # Admin voit tous les plans
+            return SubscriptionPlan.objects.all()
+        
+        # Public voit uniquement les plans actifs
+        return SubscriptionPlan.objects.filter(is_active=True)
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return SubscriptionPlanListSerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return SubscriptionPlanCreateUpdateSerializer
+        return SubscriptionPlanDetailSerializer
+    
+    def get_permissions(self):
+        """Permissions selon l'action"""
+        if self.action in ['list', 'retrieve']:
+            return [AllowAny()]
+        return [IsAuthenticated(), IsAdmin()]
+    
+    @action(detail=False, methods=['get'])
+    def recommended(self, request):
+        """Plans recommandés selon le profil utilisateur"""
+        # Logique simple: plans les plus populaires
+        plans = SubscriptionPlan.objects.filter(
+            is_active=True
+        ).annotate(
+            subscription_count=Count('subscription')
+        ).order_by('-subscription_count')[:3]
+        
+        serializer = SubscriptionPlanListSerializer(
+            plans,
+            many=True,
+            context={'request': request}
+        )
+        return Response(serializer.data)
+
+
+# ============================================================================
+# Subscription ViewSet
+# ============================================================================
+
+class SubscriptionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet pour les abonnements.
+    - Propriétaires: voir/créer leurs abonnements
+    - Admin: gérer tous les abonnements
+    """
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['status', 'is_trial', 'plan']
+    ordering_fields = ['start_date', 'end_date', 'created_at']
+    ordering = ['-created_at']
+    
+    def get_queryset(self):
+        """Filtrer les abonnements selon le rôle"""
+        if self.request.user.is_staff:
+            return Subscription.objects.all()
+        
+        # Propriétaires voient uniquement leurs abonnements
+        return Subscription.objects.filter(user=self.request.user)
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return SubscriptionListSerializer
+        elif self.action == 'create':
+            return SubscriptionCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return SubscriptionUpdateSerializer
+        return SubscriptionDetailSerializer
+    
+    def get_permissions(self):
+        """Permissions selon l'action"""
+        if self.action in ['create', 'list', 'retrieve']:
+            return [IsAuthenticated()]
+        elif self.action in ['update', 'partial_update']:
+            return [IsAuthenticated(), IsOwner()]
+        return [IsAuthenticated(), IsAdmin()]
+    
+    @action(detail=False, methods=['get'])
+    def current(self, request):
+        """Obtenir l'abonnement actif de l'utilisateur"""
+        subscription = Subscription.objects.filter(
+            user=request.user,
+            status__in=['trial', 'active'],
+            end_date__gt=timezone.now()
+        ).first()
+        
+        if subscription:
+            serializer = SubscriptionDetailSerializer(
+                subscription,
+                context={'request': request}
+            )
+            return Response(serializer.data)
+        
+        return Response({
+            'message': 'Aucun abonnement actif',
+            'has_subscription': False
+        })
+    
+    @action(detail=False, methods=['get'])
+    def status(self, request):
+        """Statut complet de l'abonnement utilisateur"""
+        user = request.user
+        
+        # Récupérer l'abonnement actif
+        subscription = Subscription.objects.filter(
+            user=user,
+            status__in=['trial', 'active'],
+            end_date__gt=timezone.now()
+        ).first()
+        
+        # Compter les annonces actuelles
+        current_listings = Listing.objects.filter(owner=user).count()
+        
+        if subscription:
+            max_listings = subscription.plan.max_listings
+            can_create = (max_listings == -1) or (current_listings < max_listings)
+            remaining_listings = -1 if max_listings == -1 else max(0, max_listings - current_listings)
+            days_remaining = (subscription.end_date - timezone.now()).days
+            
+            data = {
+                'has_active_subscription': True,
+                'current_subscription': SubscriptionDetailSerializer(
+                    subscription,
+                    context={'request': request}
+                ).data,
+                'can_create_listings': can_create,
+                'remaining_listings': remaining_listings,
+                'days_remaining': days_remaining
+            }
+        else:
+            data = {
+                'has_active_subscription': False,
+                'current_subscription': None,
+                'can_create_listings': False,
+                'remaining_listings': 0,
+                'days_remaining': 0
+            }
+        
+        serializer = UserSubscriptionStatusSerializer(data)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        """Annuler un abonnement"""
+        subscription = self.get_object()
+        
+        # Vérifier que c'est l'utilisateur propriétaire
+        if subscription.user != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'Vous n\'êtes pas autorisé à annuler cet abonnement'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        if subscription.status in ['expired', 'cancelled']:
+            return Response(
+                {'error': 'Cet abonnement est déjà terminé'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        subscription.status = 'cancelled'
+        subscription.auto_renew = False
+        subscription.save()
+        
+        return Response({
+            'message': 'Abonnement annulé avec succès',
+            'data': SubscriptionDetailSerializer(
+                subscription,
+                context={'request': request}
+            ).data
+        })
+    
+    @action(detail=True, methods=['post'])
+    def renew(self, request, pk=None):
+        """Renouveler un abonnement expiré"""
+        old_subscription = self.get_object()
+        
+        # Vérifier que c'est l'utilisateur propriétaire
+        if old_subscription.user != request.user and not request.user.is_staff:
+            return Response(
+                {'error': 'Vous n\'êtes pas autorisé à renouveler cet abonnement'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        # Vérifier qu'il n'y a pas déjà un abonnement actif
+        active_subscription = Subscription.objects.filter(
+            user=request.user,
+            status__in=['trial', 'active'],
+            end_date__gt=timezone.now()
+        ).exists()
+        
+        if active_subscription:
+            return Response(
+                {'error': 'Vous avez déjà un abonnement actif'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Créer un nouvel abonnement avec le même plan
+        start_date = timezone.now()
+        end_date = start_date + relativedelta(months=old_subscription.plan.duration_months)
+        
+        new_subscription = Subscription.objects.create(
+            user=request.user,
+            plan=old_subscription.plan,
+            status='pending',  # En attente de paiement
+            start_date=start_date,
+            end_date=end_date,
+            is_trial=False,
+            auto_renew=old_subscription.auto_renew
+        )
+        
+        return Response({
+            'message': 'Nouvel abonnement créé. Veuillez procéder au paiement.',
+            'data': SubscriptionDetailSerializer(
+                new_subscription,
+                context={'request': request}
+            ).data
+        }, status=status.HTTP_201_CREATED)
+    
+    @action(detail=False, methods=['get'])
+    def history(self, request):
+        """Historique des abonnements de l'utilisateur"""
+        subscriptions = Subscription.objects.filter(
+            user=request.user
+        ).order_by('-created_at')
+        
+        serializer = SubscriptionListSerializer(
+            subscriptions,
+            many=True,
+            context={'request': request}
+        )
+        return Response(serializer.data)
+
+
+# ============================================================================
+# Payment ViewSet
+# ============================================================================
+
+class PaymentViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet pour les paiements.
+    - Utilisateurs: voir leurs paiements, initier des paiements
+    - Admin: gérer tous les paiements
+    """
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filterset_fields = ['status', 'payment_method', 'subscription']
+    ordering_fields = ['created_at', 'paid_at', 'amount']
+    ordering = ['-created_at']
+    http_method_names = ['get', 'post']  # Pas de PUT/PATCH/DELETE
+    
+    def get_queryset(self):
+        """Filtrer les paiements selon le rôle"""
+        if self.request.user.is_staff:
+            return Payment.objects.all()
+        
+        # Utilisateurs voient uniquement leurs paiements
+        return Payment.objects.filter(subscription__user=self.request.user)
+    
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PaymentListSerializer
+        elif self.action == 'initiate':
+            return PaymentInitiateSerializer
+        elif self.action == 'update_status':
+            return PaymentStatusUpdateSerializer
+        return PaymentDetailSerializer
+    
+    @action(detail=False, methods=['post'])
+    def initiate(self, request):
+        """Initier un paiement"""
+        serializer = PaymentInitiateSerializer(
+            data=request.data,
+            context={'request': request}
+        )
+        
+        if serializer.is_valid():
+            subscription = serializer.validated_data['subscription']
+            payment_method = serializer.validated_data['payment_method']
+            phone_number = serializer.validated_data.get('phone_number')
+            
+            # Générer un ID de transaction unique
+            transaction_id = f"PAY-{uuid.uuid4().hex[:16].upper()}"
+            
+            # Créer le paiement
+            payment = Payment.objects.create(
+                subscription=subscription,
+                amount=subscription.plan.price,
+                payment_method=payment_method,
+                status='pending',
+                transaction_id=transaction_id
+            )
+            
+            # TODO: Intégrer les API de paiement réelles
+            # Pour MTN MoMo, Moov Money, ou carte bancaire
+            
+            response_data = {
+                'message': 'Paiement initié avec succès',
+                'payment': PaymentDetailSerializer(
+                    payment,
+                    context={'request': request}
+                ).data,
+                'payment_instructions': self._get_payment_instructions(
+                    payment_method,
+                    phone_number,
+                    subscription.plan.price
+                )
+            }
+            
+            return Response(response_data, status=status.HTTP_201_CREATED)
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    def _get_payment_instructions(self, payment_method, phone_number, amount):
+        """Instructions de paiement selon la méthode"""
+        instructions = {
+            'mtn_momo': {
+                'message': 'Vous allez recevoir une demande de paiement sur votre téléphone.',
+                'steps': [
+                    f'Composez #150# sur votre téléphone {phone_number}',
+                    'Confirmez le paiement',
+                    f'Montant: {amount} FCFA'
+                ]
+            },
+            'moov_money': {
+                'message': 'Vous allez recevoir une demande de paiement sur votre téléphone.',
+                'steps': [
+                    f'Composez *155# sur votre téléphone {phone_number}',
+                    'Confirmez le paiement',
+                    f'Montant: {amount} FCFA'
+                ]
+            },
+            'card': {
+                'message': 'Vous serez redirigé vers la page de paiement sécurisée.',
+                'steps': [
+                    'Entrez les informations de votre carte',
+                    'Confirmez le paiement',
+                    f'Montant: {amount} FCFA'
+                ]
+            }
+        }
+        
+        return instructions.get(payment_method, {})
+    
+    @action(detail=False, methods=['post'])
+    def callback(self, request):
+        """Callback des prestataires de paiement (webhook)"""
+        serializer = PaymentCallbackSerializer(data=request.data)
+        
+        if serializer.is_valid():
+            transaction_id = serializer.validated_data['transaction_id']
+            callback_status = serializer.validated_data['status']
+            provider_response = serializer.validated_data.get('provider_response', {})
+            
+            try:
+                payment = Payment.objects.get(transaction_id=transaction_id)
+                
+                if callback_status == 'success':
+                    payment.status = 'completed'
+                    payment.paid_at = timezone.now()
+                    payment.payment_provider_response = provider_response
+                    payment.save()
+                    
+                    # Activer l'abonnement
+                    subscription = payment.subscription
+                    subscription.status = 'active'
+                    subscription.save()
+                    
+                    # TODO: Envoyer notification de confirmation
+                    
+                    return Response({
+                        'message': 'Paiement confirmé avec succès',
+                        'payment_id': payment.id
+                    })
+                else:
+                    payment.status = 'failed'
+                    payment.payment_provider_response = provider_response
+                    payment.save()
+                    
+                    return Response({
+                        'message': 'Paiement échoué',
+                        'payment_id': payment.id
+                    })
+                
+            except Payment.DoesNotExist:
+                return Response(
+                    {'error': 'Transaction introuvable'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsAdmin])
+    def update_status(self, request, pk=None):
+        """Mettre à jour le statut d'un paiement (Admin)"""
+        payment = self.get_object()
+        serializer = PaymentStatusUpdateSerializer(
+            payment,
+            data=request.data,
+            partial=True
+        )
+        
+        if serializer.is_valid():
+            serializer.save()
+            
+            # Si le paiement est complété, activer l'abonnement
+            if serializer.validated_data.get('status') == 'completed':
+                subscription = payment.subscription
+                subscription.status = 'active'
+                subscription.save()
+            
+            return Response({
+                'message': 'Statut du paiement mis à jour',
+                'data': PaymentDetailSerializer(
+                    payment,
+                    context={'request': request}
+                ).data
+            })
+        
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['get'])
+    def my_payments(self, request):
+        """Historique des paiements de l'utilisateur"""
+        payments = Payment.objects.filter(
+            subscription__user=request.user
+        ).order_by('-created_at')
+        
+        serializer = PaymentListSerializer(
+            payments,
+            many=True,
+            context={'request': request}
+        )
+        return Response(serializer.data)
+    
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated, IsAdmin])
+    def statistics(self, request):
+        """Statistiques des paiements (Admin)"""
+        # Filtrer par période si fournie
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        
+        payments = Payment.objects.filter(status='completed')
+        
+        if start_date:
+            payments = payments.filter(paid_at__gte=start_date)
+        if end_date:
+            payments = payments.filter(paid_at__lte=end_date)
+        
+        stats = {
+            'total_payments': payments.count(),
+            'total_revenue': payments.aggregate(Sum('amount'))['amount__sum'] or 0,
+            'by_method': {},
+            'by_status': {}
+        }
+        
+        # Statistiques par méthode de paiement
+        for method, _ in Payment.PAYMENT_METHOD_CHOICES:
+            count = Payment.objects.filter(
+                payment_method=method,
+                status='completed'
+            ).count()
+            revenue = Payment.objects.filter(
+                payment_method=method,
+                status='completed'
+            ).aggregate(Sum('amount'))['amount__sum'] or 0
+            
+            stats['by_method'][method] = {
+                'count': count,
+                'revenue': float(revenue)
+            }
+        
+        # Statistiques par statut
+        for status_val, _ in Payment.STATUS_CHOICES:
+            count = Payment.objects.filter(status=status_val).count()
+            stats['by_status'][status_val] = count
+        
+        return Response(stats)
+
+
+# ============================================================================
+# Admin Dashboard ViewSet
+# ============================================================================
+
+class SubscriptionAdminViewSet(viewsets.ViewSet):
+    """ViewSet pour les statistiques d'administration"""
+    permission_classes = [IsAuthenticated, IsAdmin]
+    
+    @action(detail=False, methods=['get'])
+    def dashboard(self, request):
+        """Dashboard admin avec statistiques globales"""
+        now = timezone.now()
+        first_day_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        
+        # Statistiques des abonnements
+        total_subscriptions = Subscription.objects.count()
+        active_subscriptions = Subscription.objects.filter(
+            status__in=['trial', 'active'],
+            end_date__gt=now
+        ).count()
+        trial_subscriptions = Subscription.objects.filter(
+            status='trial',
+            end_date__gt=now
+        ).count()
+        expired_subscriptions = Subscription.objects.filter(
+            status='expired'
+        ).count()
+        
+        # Revenus
+        total_revenue = Payment.objects.filter(
+            status='completed'
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+        
+        revenue_this_month = Payment.objects.filter(
+            status='completed',
+            paid_at__gte=first_day_of_month
+        ).aggregate(Sum('amount'))['amount__sum'] or 0
+        
+        # Taux de conversion (essai -> payant)
+        trials = Subscription.objects.filter(is_trial=True).count()
+        paid = Subscription.objects.filter(is_trial=False, status='active').count()
+        conversion_rate = (paid / trials * 100) if trials > 0 else 0
+        
+        data = {
+            'total_subscriptions': total_subscriptions,
+            'active_subscriptions': active_subscriptions,
+            'trial_subscriptions': trial_subscriptions,
+            'expired_subscriptions': expired_subscriptions,
+            'total_revenue': float(total_revenue),
+            'revenue_this_month': float(revenue_this_month),
+            'conversion_rate': round(conversion_rate, 2)
+        }
+        
+        serializer = SubscriptionStatsSerializer(data)
+        return Response(serializer.data)
