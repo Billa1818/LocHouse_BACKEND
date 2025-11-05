@@ -1,178 +1,343 @@
+# Documentation API - App Core LocHouse
 
-"""
-=============================================================================
-DOCUMENTATION DES ROUTES API - APP CORE
-=============================================================================
+> **Version:** 1.0  
+> **Date:** Novembre 2025  
+> **Projet:** LocHouse - Plateforme de location immobilière
 
-PAGES STATIQUES (Public pour list/retrieve, Admin pour CUD - EF-A-07):
------------------------------------------------------------------------------
-GET    /api/core/static-pages/                    
-    - Liste toutes les pages statiques publiées
-    - Permissions: AllowAny
-    - Retourne: Liste de pages (titre, slug, meta_description)
+---
 
-POST   /api/core/static-pages/                    
-    - Créer une nouvelle page statique
-    - Permissions: IsAdminUser
-    - Body: {slug, title, content, meta_description?, is_published?}
+## Table des matières
 
-GET    /api/core/static-pages/{slug}/             
-    - Détail d'une page statique spécifique
-    - Permissions: AllowAny
-    - Retourne: Page complète avec contenu
+1. [Vue d'ensemble](#vue-densemble)
+2. [Modèles de données](#modèles-de-données)
+3. [API Endpoints](#api-endpoints)
+4. [Tâches automatisées (Celery)](#tâches-automatisées-celery)
+5. [Permissions et sécurité](#permissions-et-sécurité)
+6. [Exemples d'utilisation](#exemples-dutilisation)
+7. [Configuration](#configuration)
 
-PUT    /api/core/static-pages/{slug}/             
-    - Modifier complètement une page
-    - Permissions: IsAdminUser
-    - Body: {title, content, meta_description?, is_published?}
+---
 
-PATCH  /api/core/static-pages/{slug}/             
-    - Modifier partiellement une page
-    - Permissions: IsAdminUser
-    - Body: Champs à modifier seulement
+## Vue d'ensemble
 
-DELETE /api/core/static-pages/{slug}/             
-    - Supprimer une page statique
-    - Permissions: IsAdminUser
+L'application **Core** constitue le noyau fonctionnel de LocHouse. Elle gère :
+
+- 📄 **Pages statiques** (CGU, FAQ, Politique de confidentialité)
+- 🔔 **Notifications utilisateurs** (en temps réel et par email)
+- 📊 **Analytiques et statistiques** (dashboard administrateur)
+- ⚙️ **Tâches automatisées** (rappels, rapports, nettoyages)
 
 
-NOTIFICATIONS (Authentifié uniquement):
------------------------------------------------------------------------------
-GET    /api/core/notifications/                   
-    - Liste toutes les notifications de l'utilisateur connecté
-    - Permissions: IsAuthenticated
-    - Query params: ?is_read=true/false (optionnel)
-    - Retourne: Liste des notifications avec pagination
+## API Endpoints
 
-GET    /api/core/notifications/{id}/              
-    - Détail d'une notification spécifique
-    - Permissions: IsAuthenticated (propriétaire uniquement)
-    - Retourne: Notification complète
+### Pages statiques
 
-GET    /api/core/notifications/unread_count/      
-    - Nombre de notifications non lues
-    - Permissions: IsAuthenticated
-    - Retourne: {unread_count: number}
+#### **Liste des pages**
 
-POST   /api/core/notifications/{id}/mark_read/    
-    - Marquer une notification comme lue
-    - Permissions: IsAuthenticated (propriétaire uniquement)
-    - Retourne: Notification mise à jour
+```http
+GET /api/core/static-pages/
+```
 
-POST   /api/core/notifications/mark_multiple_read/ 
-    - Marquer plusieurs notifications comme lues
-    - Permissions: IsAuthenticated
-    - Body option 1: {notification_ids: [1, 2, 3]}
-    - Body option 2: {mark_all: true}
-    - Retourne: {message: string, updated_count: number}
+**Permissions:** Public (AllowAny)
 
-DELETE /api/core/notifications/delete_all_read/   
-    - Supprimer toutes les notifications déjà lues
-    - Permissions: IsAuthenticated
-    - Retourne: {message: string, deleted_count: number}
+**Réponse:**
+```json
+[
+  {
+    "id": 1,
+    "slug": "terms-of-service",
+    "title": "Conditions Générales d'Utilisation",
+    "meta_description": "CGU de la plateforme LocHouse",
+    "updated_at": "2025-11-05T10:30:00Z"
+  }
+]
+```
 
+---
 
-ANALYTICS (Admin uniquement - EF-A-08):
------------------------------------------------------------------------------
-GET    /api/core/analytics/                       
-    - Liste des statistiques quotidiennes
-    - Permissions: IsAdminUser
-    - Query params: ?date__gte=YYYY-MM-DD&date__lte=YYYY-MM-DD
-    - Retourne: Liste des analytics avec pagination
+#### **Détail d'une page**
 
-POST   /api/core/analytics/                       
-    - Créer une entrée de statistiques
-    - Permissions: IsAdminUser
-    - Body: {date, new_users, new_listings, active_subscriptions, revenue, total_searches, total_contacts}
+```http
+GET /api/core/static-pages/{slug}/
+```
 
-GET    /api/core/analytics/{id}/                  
-    - Détail des stats d'un jour spécifique
-    - Permissions: IsAdminUser
+**Permissions:** Public (AllowAny)
 
-PUT    /api/core/analytics/{id}/                  
-    - Modifier les statistiques d'un jour
-    - Permissions: IsAdminUser
+**Exemple:**
+```http
+GET /api/core/static-pages/terms-of-service/
+```
 
-DELETE /api/core/analytics/{id}/                  
-    - Supprimer une entrée de statistiques
-    - Permissions: IsAdminUser
+**Réponse:**
+```json
+{
+  "id": 1,
+  "slug": "terms-of-service",
+  "title": "Conditions Générales d'Utilisation",
+  "content": "# Article 1: Objet\n\nLes présentes CGU...",
+  "meta_description": "CGU de la plateforme LocHouse",
+  "is_published": true,
+  "updated_at": "2025-11-05T10:30:00Z"
+}
+```
 
-GET    /api/core/analytics/summary/               
-    - Résumé agrégé des statistiques sur une période
-    - Permissions: IsAdminUser
-    - Query params: ?start_date=YYYY-MM-DD&end_date=YYYY-MM-DD
-    - Par défaut: 30 derniers jours
-    - Retourne: {
-        total_users, total_listings, total_active_subscriptions,
-        total_revenue, total_searches, total_contacts,
-        period_start, period_end, daily_breakdown: [...]
-      }
+---
 
-GET    /api/core/analytics/dashboard/             
-    - Statistiques complètes du tableau de bord admin
-    - Permissions: IsAdminUser
-    - Retourne: {
-        total_users, total_proprietaires, total_locataires,
-        total_listings, published_listings, pending_listings,
-        total_property_groups, active_subscriptions, expired_subscriptions,
-        trial_subscriptions, total_revenue_today, total_revenue_month,
-        total_revenue_year, pending_identity_verifications
-      }
+#### **Créer/Modifier/Supprimer une page**
 
+```http
+POST   /api/core/static-pages/
+PUT    /api/core/static-pages/{slug}/
+PATCH  /api/core/static-pages/{slug}/
+DELETE /api/core/static-pages/{slug}/
+```
 
-=============================================================================
-EXEMPLES D'UTILISATION
-=============================================================================
+**Permissions:** Admin uniquement (IsAdminUser)
 
-1. Récupérer les CGU (Conditions Générales d'Utilisation):
-   GET /api/core/static-pages/cgu/
+**Body (POST/PUT):**
+```json
+{
+  "slug": "faq",
+  "title": "Questions Fréquentes",
+  "content": "## Comment créer une annonce ?\n\n...",
+  "meta_description": "FAQ de LocHouse",
+  "is_published": true
+}
+```
 
-2. Récupérer mes notifications non lues uniquement:
-   GET /api/core/notifications/?is_read=false
+---
 
-3. Compter mes notifications non lues:
-   GET /api/core/notifications/unread_count/
+### Notifications
 
-4. Marquer toutes mes notifications comme lues:
-   POST /api/core/notifications/mark_multiple_read/
-   Body: {"mark_all": true}
+#### **Liste des notifications utilisateur**
 
-5. Marquer des notifications spécifiques comme lues:
-   POST /api/core/notifications/mark_multiple_read/
-   Body: {"notification_ids": [1, 5, 12]}
+```http
+GET /api/core/notifications/
+```
 
-6. Supprimer toutes mes notifications déjà lues:
-   DELETE /api/core/notifications/delete_all_read/
+**Permissions:** Authentifié (IsAuthenticated)
 
-7. Obtenir les stats des 30 derniers jours:
-   GET /api/core/analytics/summary/?start_date=2025-10-01&end_date=2025-11-01
+**Réponse:**
+```json
+[
+  {
+    "id": 42,
+    "notification_type": "subscription_expiring",
+    "notification_type_display": "Abonnement expire bientôt",
+    "title": "Votre abonnement expire dans 7 jours",
+    "message": "Votre abonnement Premium expire le 12/11/2025...",
+    "link": "/dashboard/subscriptions/5/renew",
+    "is_read": false,
+    "created_at": "2025-11-05T08:00:00Z"
+  }
+]
+```
 
-8. Obtenir les stats d'une période précise:
-   GET /api/core/analytics/summary/?start_date=2025-01-01&end_date=2025-01-31
+---
 
-9. Dashboard admin complet avec toutes les métriques:
-   GET /api/core/analytics/dashboard/
+#### **Nombre de notifications non lues**
 
-10. Créer une page statique (Admin):
-    POST /api/core/static-pages/
-    Body: {
-        "slug": "faq",
-        "title": "Questions Fréquentes",
-        "content": "# FAQ\n\n...",
-        "meta_description": "FAQ LocHouse",
-        "is_published": true
+```http
+GET /api/core/notifications/unread_count/
+```
+
+**Permissions:** Authentifié
+
+**Réponse:**
+```json
+{
+  "unread_count": 5
+}
+```
+
+---
+
+#### **Marquer une notification comme lue**
+
+```http
+POST /api/core/notifications/{id}/mark_read/
+```
+
+**Permissions:** Authentifié (propriétaire uniquement)
+
+**Réponse:**
+```json
+{
+  "id": 42,
+  "notification_type": "subscription_expiring",
+  "is_read": true,
+  "created_at": "2025-11-05T08:00:00Z"
+}
+```
+
+---
+
+#### **Marquer plusieurs notifications comme lues**
+
+```http
+POST /api/core/notifications/mark_multiple_read/
+```
+
+**Body (Option 1 - IDs spécifiques):**
+```json
+{
+  "notification_ids": [42, 43, 44]
+}
+```
+
+**Body (Option 2 - Tout marquer comme lu):**
+```json
+{
+  "mark_all": true
+}
+```
+
+**Réponse:**
+```json
+{
+  "message": "3 notification(s) marquée(s) comme lue(s)",
+  "updated_count": 3
+}
+```
+
+---
+
+#### **Supprimer toutes les notifications lues**
+
+```http
+DELETE /api/core/notifications/delete_all_read/
+```
+
+**Permissions:** Authentifié
+
+**Réponse:**
+```json
+{
+  "message": "8 notification(s) supprimée(s)",
+  "deleted_count": 8
+}
+```
+
+---
+
+### Analytics (Admin uniquement)
+
+#### **Liste des statistiques quotidiennes**
+
+```http
+GET /api/core/analytics/
+```
+
+**Permissions:** Admin (IsAdminUser)
+
+**Réponse:**
+```json
+[
+  {
+    "id": 1,
+    "date": "2025-11-04",
+    "new_users": 12,
+    "new_listings": 8,
+    "active_subscriptions": 150,
+    "revenue": "45000.00",
+    "total_searches": 320,
+    "total_contacts": 25
+  }
+]
+```
+
+---
+
+#### **Résumé sur une période**
+
+```http
+GET /api/core/analytics/summary/?start_date=2025-10-01&end_date=2025-10-31
+```
+
+**Permissions:** Admin
+
+**Query params:**
+- `start_date` (optionnel) : Date de début (YYYY-MM-DD)
+- `end_date` (optionnel) : Date de fin (YYYY-MM-DD)
+
+**Par défaut:** 30 derniers jours
+
+**Réponse:**
+```json
+{
+  "total_users": 250,
+  "total_listings": 180,
+  "total_active_subscriptions": 150,
+  "total_revenue": "1250000.00",
+  "total_searches": 8500,
+  "total_contacts": 420,
+  "period_start": "2025-10-01",
+  "period_end": "2025-10-31",
+  "daily_breakdown": [
+    {
+      "id": 1,
+      "date": "2025-10-01",
+      "new_users": 8,
+      "new_listings": 5,
+      "active_subscriptions": 145,
+      "revenue": "38000.00",
+      "total_searches": 280,
+      "total_contacts": 15
     }
+  ]
+}
+```
+
+---
+
+#### **Dashboard administrateur complet**
+
+```http
+GET /api/core/analytics/dashboard/
+```
+
+**Permissions:** Admin
+
+**Réponse complète:**
+```json
+{
+  "total_users": 1250,
+  "total_proprietaires": 450,
+  "total_locataires": 800,
+  "total_listings": 680,
+  "published_listings": 620,
+  "pending_listings": 35,
+  "total_property_groups": 280,
+  "active_subscriptions": 150,
+  "expired_subscriptions": 45,
+  "trial_subscriptions": 38,
+  "total_revenue_today": "125000.00",
+  "total_revenue_month": "3500000.00",
+  "total_revenue_year": "42000000.00",
+  "pending_identity_verifications": 12,
+  "total_reviews": 340,
+  "pending_reviews": 8,
+  "total_availability_requests": 850,
+  "pending_availability_requests": 22
+}
+```
 
 
-=============================================================================
-CODES DE STATUT HTTP
-=============================================================================
-200 OK              - Requête réussie
-201 Created         - Ressource créée
-204 No Content      - Suppression réussie
-400 Bad Request     - Données invalides
-401 Unauthorized    - Non authentifié
-403 Forbidden       - Pas les permissions
-404 Not Found       - Ressource introuvable
-500 Server Error    - Erreur serveur
-"""
+
+## Codes d'erreur
+
+| Code | Message | Description |
+|------|---------|-------------|
+| 200 | OK | Requête réussie |
+| 201 | Created | Ressource créée |
+| 400 | Bad Request | Données invalides |
+| 401 | Unauthorized | Non authentifié |
+| 403 | Forbidden | Pas les permissions |
+| 404 | Not Found | Ressource introuvable |
+| 500 | Internal Server Error | Erreur serveur |
+
+---
+
+## Support
+
+Pour toute question ou problème, contactez ASSOUMA Z. Billa.

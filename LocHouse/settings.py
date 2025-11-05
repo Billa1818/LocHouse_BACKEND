@@ -213,16 +213,16 @@ DEFAULT_FROM_EMAIL = 'lochouse@assitance.com'
 
 
 # Clés PayDunya (à mettre dans vos variables d'environnement)
-PAYDUNYA_MASTER_KEY = os.getenv('PAYDUNYA_MASTER_KEY', 'your-master-key')
-PAYDUNYA_PRIVATE_KEY = os.getenv('PAYDUNYA_PRIVATE_KEY', 'your-private-key')
-PAYDUNYA_TOKEN = os.getenv('PAYDUNYA_TOKEN', 'your-token')
+PAYDUNYA_MASTER_KEY = os.getenv('PAYDUNYA_MASTER_KEY', 'jLMOpE2O-euVg-nXVI-eaRf-pBdCmWz8Q83K')
+PAYDUNYA_PRIVATE_KEY = os.getenv('PAYDUNYA_PRIVATE_KEY', 'test_private_FjGsZU9MicX9USeyDHEoJ4oM5rv')
+PAYDUNYA_TOKEN = os.getenv('PAYDUNYA_TOKEN', 'lywKCjJRtz6htrProPe3')
 
 # Mode: 'test' ou 'live'
 PAYDUNYA_MODE = os.getenv('PAYDUNYA_MODE', 'test')
 
 # Informations de la boutique
-PAYDUNYA_STORE_NAME = os.getenv('PAYDUNYA_STORE_NAME', 'LOMIMO')
-PAYDUNYA_STORE_TAGLINE = os.getenv('PAYDUNYA_STORE_TAGLINE', 'Plateforme de location immobilière')
+PAYDUNYA_STORE_NAME = os.getenv('PAYDUNYA_STORE_NAME', 'LocHouse')
+PAYDUNYA_STORE_TAGLINE = os.getenv('PAYDUNYA_STORE_TAGLINE', 'Application de location immobilier')
 
 # URL du site (pour les callbacks)
 SITE_URL = os.getenv('SITE_URL', 'http://localhost:8000')

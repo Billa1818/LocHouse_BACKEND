@@ -13,7 +13,7 @@ from .tasks import (
     send_identity_verification_email_task,
     send_account_status_email_task
 )
-
+from rest_framework.views import APIView
 from .models import OTPToken, UserSession
 from .serializers import (
     UserRegistrationSerializer,
@@ -143,7 +143,7 @@ class VerifyOTPView(generics.GenericAPIView):
         }, status=status.HTTP_200_OK)
 
 
-class RefreshTokenView(generics.GenericAPIView):
+class RefreshTokenView(APIView):
     """Vue pour rafraîchir le token d'accès"""
     permission_classes = [AllowAny]
     

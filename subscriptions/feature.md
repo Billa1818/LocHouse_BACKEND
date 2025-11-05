@@ -1,624 +1,845 @@
-# Exemples d'intégration Frontend - PayDunya
+# Documentation API - Gestion des Abonnements LocHouse
 
-## 🎯 Vue d'ensemble
+## Table des matières
+1. [Introduction](#introduction)
+2. [Authentification](#authentification)
+3. [Plans d'abonnement](#plans-dabonnement)
+4. [Abonnements](#abonnements)
+5. [Paiements](#paiements)
+6. [Administration](#administration)
+7. [Codes de statut](#codes-de-statut)
 
-Ce document contient des exemples de code pour intégrer les paiements PayDunya dans votre frontend.
+---
 
-## 📦 Installation
+## Introduction
 
-```bash
-npm install axios
-# ou
-yarn add axios
+Cette API permet de gérer les plans d'abonnement, les souscriptions et les paiements via PayDunya pour la plateforme LocHouse.
+
+**Base URL**: `/api/subscriptions/`
+
+**Format de réponse**: JSON
+
+---
+
+## Authentification
+
+La plupart des endpoints nécessitent une authentification via token JWT.
+
+**Header requis**:
+```
+Authorization: Bearer <votre_token_jwt>
 ```
 
-## 🔧 Configuration API
+---
 
-```javascript
-// src/services/api.js
-import axios from 'axios';
+## Plans d'abonnement
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
+### 1. Liste des plans d'abonnement
 
-const api = axios.create({
-  baseURL: API_BASE_URL,
-  headers: {
-    'Content-Type': 'application/json',
-  },
-});
+**Endpoint**: `GET /plans/`
 
-// Intercepteur pour ajouter le token d'authentification
-api.interceptors.request.use(
-  (config) => {
-    const token = localStorage.getItem('authToken');
-    if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
-    }
-    return config;
-  },
-  (error) => Promise.reject(error)
-);
+**Permissions**: Public (tous les utilisateurs)
 
-export default api;
+**Description**: Récupère la liste des plans d'abonnement actifs.
+
+**Paramètres de requête**:
+- `ordering`: Tri par `duration_months` ou `price` (ex: `-price`)
+
+**Réponse** (200 OK):
+```json
+[
+  {
+    "id": 1,
+    "name": "Plan Basic",
+    "duration_months": 1,
+    "price": "5000.00",
+    "max_listings": 3,
+    "is_premium": false,
+    "has_priority_support": false,
+    "has_featured_listings": false,
+    "description": "Plan d'entrée pour démarrer",
+    "is_active": true
+  }
+]
 ```
 
-## 💳 Service de paiement
+---
 
-```javascript
-// src/services/paymentService.js
-import api from './api';
+### 2. Détails d'un plan
 
-export const paymentService = {
-  // Initier un paiement
-  async initiatePayment(subscriptionId) {
-    try {
-      const response = await api.post('/payments/initiate/', {
-        subscription: subscriptionId,
-        payment_method: 'paydunya'
-      });
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+**Endpoint**: `GET /plans/{id}/`
 
-  // Vérifier le statut d'un paiement
-  async verifyPayment(paymentId) {
-    try {
-      const response = await api.get(`/payments/${paymentId}/verify/`);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+**Permissions**: Public
 
-  // Récupérer mes paiements
-  async getMyPayments() {
-    try {
-      const response = await api.get('/payments/my_payments/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
+**Description**: Récupère les détails d'un plan spécifique.
 
-  // Obtenir les détails d'un paiement
-  async getPaymentDetails(paymentId) {
-    try {
-      const response = await api.get(`/payments/${paymentId}/`);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  }
-};
-```
-
-## 📱 Service d'abonnement
-
-```javascript
-// src/services/subscriptionService.js
-import api from './api';
-
-export const subscriptionService = {
-  // Obtenir les plans disponibles
-  async getPlans() {
-    try {
-      const response = await api.get('/subscription-plans/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Créer un abonnement
-  async createSubscription(planId) {
-    try {
-      const response = await api.post('/subscriptions/', {
-        plan: planId
-      });
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Obtenir l'abonnement actuel
-  async getCurrentSubscription() {
-    try {
-      const response = await api.get('/subscriptions/current/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Obtenir le statut complet
-  async getSubscriptionStatus() {
-    try {
-      const response = await api.get('/subscriptions/status/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Annuler un abonnement
-  async cancelSubscription(subscriptionId) {
-    try {
-      const response = await api.post(`/subscriptions/${subscriptionId}/cancel/`);
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  }
-};
-```
-
-## 🎨 Composant React - Sélection de plan
-
-```jsx
-// src/components/SubscriptionPlans.jsx
-import React, { useState, useEffect } from 'react';
-import { subscriptionService } from '../services/subscriptionService';
-import { paymentService } from '../services/paymentService';
-
-const SubscriptionPlans = () => {
-  const [plans, setPlans] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [selectedPlan, setSelectedPlan] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    loadPlans();
-  }, []);
-
-  const loadPlans = async () => {
-    try {
-      const data = await subscriptionService.getPlans();
-      setPlans(data);
-    } catch (err) {
-      setError('Erreur lors du chargement des plans');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleSubscribe = async (plan) => {
-    setLoading(true);
-    setError(null);
-
-    try {
-      // 1. Créer l'abonnement
-      const subscription = await subscriptionService.createSubscription(plan.id);
-      
-      // 2. Initier le paiement
-      const payment = await paymentService.initiatePayment(subscription.id);
-      
-      // 3. Rediriger vers PayDunya
-      window.location.href = payment.payment_url;
-      
-    } catch (err) {
-      setError(err.error || 'Erreur lors de la souscription');
-      console.error(err);
-      setLoading(false);
-    }
-  };
-
-  if (loading && plans.length === 0) {
-    return <div className="text-center py-8">Chargement...</div>;
-  }
-
-  return (
-    <div className="container mx-auto px-4 py-8">
-      <h1 className="text-3xl font-bold text-center mb-8">
-        Choisissez votre plan
-      </h1>
-
-      {error && (
-        <div className="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded mb-4">
-          {error}
-        </div>
-      )}
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        {plans.map((plan) => (
-          <div
-            key={plan.id}
-            className="border rounded-lg p-6 shadow-lg hover:shadow-xl transition-shadow"
-          >
-            <h2 className="text-2xl font-bold mb-2">{plan.name}</h2>
-            <p className="text-gray-600 mb-4">{plan.description}</p>
-            
-            <div className="mb-4">
-              <span className="text-4xl font-bold">{plan.price}</span>
-              <span className="text-gray-600"> FCFA</span>
-              <span className="text-gray-500"> / {plan.duration_months} mois</span>
-            </div>
-
-            <ul className="mb-6 space-y-2">
-              <li className="flex items-center">
-                <svg className="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                  <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                </svg>
-                {plan.max_listings === -1 ? 'Annonces illimitées' : `${plan.max_listings} annonces`}
-              </li>
-              {plan.features?.map((feature, index) => (
-                <li key={index} className="flex items-center">
-                  <svg className="w-5 h-5 text-green-500 mr-2" fill="currentColor" viewBox="0 0 20 20">
-                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
-                  </svg>
-                  {feature}
-                </li>
-              ))}
-            </ul>
-
-            <button
-              onClick={() => handleSubscribe(plan)}
-              disabled={loading}
-              className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded transition-colors disabled:bg-gray-400"
-            >
-              {loading ? 'Chargement...' : 'Souscrire'}
-            </button>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-
-export default SubscriptionPlans;
-```
-
-## ✅ Composant React - Confirmation de paiement
-
-```jsx
-// src/components/PaymentSuccess.jsx
-import React, { useEffect, useState } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
-import { paymentService } from '../services/paymentService';
-
-const PaymentSuccess = () => {
-  const { paymentId } = useParams();
-  const navigate = useNavigate();
-  const [payment, setPayment] = useState(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    verifyPayment();
-  }, [paymentId]);
-
-  const verifyPayment = async () => {
-    try {
-      // Vérifier le paiement auprès du serveur
-      const data = await paymentService.verifyPayment(paymentId);
-      setPayment(data);
-      
-      // Si le paiement est complété, rediriger après 3 secondes
-      if (data.paydunya_status === 'completed') {
-        setTimeout(() => {
-          navigate('/dashboard');
-        }, 3000);
-      }
-    } catch (err) {
-      setError('Erreur lors de la vérification du paiement');
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
-    return (
-      <div className="flex justify-center items-center min-h-screen">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-16 w-16 border-b-2 border-blue-600 mx-auto mb-4"></div>
-          <p>Vérification du paiement...</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="container mx-auto px-4 py-8">
-        <div className="max-w-md mx-auto bg-red-100 border border-red-400 text-red-700 px-6 py-4 rounded">
-          <h2 className="text-xl font-bold mb-2">Erreur</h2>
-          <p>{error}</p>
-          <button
-            onClick={() => navigate('/subscriptions')}
-            className="mt-4 bg-red-600 text-white px-4 py-2 rounded hover:bg-red-700"
-          >
-            Retour aux abonnements
-          </button>
-        </div>
-      </div>
-    );
-  }
-
-  const isCompleted = payment?.paydunya_status === 'completed';
-
-  return (
-    <div className="container mx-auto px-4 py-8">
-      <div className="max-w-md mx-auto bg-white rounded-lg shadow-lg p-8">
-        <div className="text-center">
-          {isCompleted ? (
-            <>
-              <svg className="w-16 h-16 text-green-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <h2 className="text-2xl font-bold text-green-600 mb-2">
-                Paiement confirmé !
-              </h2>
-              <p className="text-gray-600 mb-6">
-                Votre abonnement est maintenant actif.
-              </p>
-            </>
-          ) : (
-            <>
-              <svg className="w-16 h-16 text-yellow-500 mx-auto mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-              </svg>
-              <h2 className="text-2xl font-bold text-yellow-600 mb-2">
-                Paiement en cours
-              </h2>
-              <p className="text-gray-600 mb-6">
-                Votre paiement est en cours de traitement.
-              </p>
-            </>
-          )}
-
-          <div className="bg-gray-100 rounded p-4 mb-6 text-left">
-            <p className="text-sm text-gray-600 mb-1">ID de transaction</p>
-            <p className="font-mono text-sm">{payment?.payment_id}</p>
-          </div>
-
-          {isCompleted && (
-            <p className="text-sm text-gray-500 mb-4">
-              Redirection vers le tableau de bord...
-            </p>
-          )}
-
-          <button
-            onClick={() => navigate('/dashboard')}
-            className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded"
-          >
-            Aller au tableau de bord
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-};
-
-export default PaymentSuccess;
-```
-
-## 📊 Composant React - Statut de l'abonnement
-
-```jsx
-// src/components/SubscriptionStatus.jsx
-import React, { useEffect, useState } from 'react';
-import { subscriptionService } from '../services/subscriptionService';
-
-const SubscriptionStatus = () => {
-  const [status, setStatus] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    loadStatus();
-  }, []);
-
-  const loadStatus = async () => {
-    try {
-      const data = await subscriptionService.getSubscriptionStatus();
-      setStatus(data);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  if (loading) {
-    return <div>Chargement...</div>;
-  }
-
-  if (!status?.has_active_subscription) {
-    return (
-      <div className="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded">
-        <p>Vous n'avez pas d'abonnement actif.</p>
-        <a href="/subscriptions" className="underline">Souscrire maintenant</a>
-      </div>
-    );
-  }
-
-  const subscription = status.current_subscription;
-
-  return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-xl font-bold mb-4">Votre abonnement</h3>
-      
-      <div className="space-y-3">
-        <div>
-          <span className="text-gray-600">Plan:</span>
-          <span className="ml-2 font-semibold">{subscription.plan.name}</span>
-        </div>
-
-        <div>
-          <span className="text-gray-600">Statut:</span>
-          <span className={`ml-2 px-2 py-1 rounded text-sm ${
-            subscription.status === 'active' ? 'bg-green-100 text-green-800' :
-            subscription.status === 'trial' ? 'bg-blue-100 text-blue-800' :
-            'bg-gray-100 text-gray-800'
-          }`}>
-            {subscription.status === 'active' ? 'Actif' :
-             subscription.status === 'trial' ? 'Période d\'essai' :
-             subscription.status}
-          </span>
-        </div>
-
-        <div>
-          <span className="text-gray-600">Expire le:</span>
-          <span className="ml-2 font-semibold">
-            {new Date(subscription.end_date).toLocaleDateString('fr-FR')}
-          </span>
-          <span className="ml-2 text-sm text-gray-500">
-            ({status.days_remaining} jours restants)
-          </span>
-        </div>
-
-        <div>
-          <span className="text-gray-600">Annonces:</span>
-          <span className="ml-2 font-semibold">
-            {status.remaining_listings === -1 
-              ? 'Illimité' 
-              : `${status.remaining_listings} restantes`}
-          </span>
-        </div>
-
-        {status.days_remaining <= 7 && (
-          <div className="mt-4 bg-yellow-50 border border-yellow-200 rounded p-3">
-            <p className="text-sm text-yellow-800">
-              ⚠️ Votre abonnement expire bientôt. Pensez à le renouveler.
-            </p>
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-export default SubscriptionStatus;
-```
-
-## 🔔 Service de notifications
-
-```javascript
-// src/services/notificationService.js
-import api from './api';
-
-export const notificationService = {
-  // Récupérer les notifications
-  async getNotifications() {
-    try {
-      const response = await api.get('/notifications/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Marquer comme lu
-  async markAsRead(notificationId) {
-    try {
-      const response = await api.patch(`/notifications/${notificationId}/`, {
-        is_read: true
-      });
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  },
-
-  // Marquer toutes comme lues
-  async markAllAsRead() {
-    try {
-      const response = await api.post('/notifications/mark_all_read/');
-      return response.data;
-    } catch (error) {
-      throw error.response?.data || error.message;
-    }
-  }
-};
-```
-
-## 🚀 Routes React Router
-
-```jsx
-// src/App.jsx
-import { BrowserRouter, Routes, Route } from 'react-router-dom';
-import SubscriptionPlans from './components/SubscriptionPlans';
-import PaymentSuccess from './components/PaymentSuccess';
-import PaymentCancel from './components/PaymentCancel';
-import Dashboard from './components/Dashboard';
-
-function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route path="/subscriptions" element={<SubscriptionPlans />} />
-        <Route path="/payment/success/:paymentId" element={<PaymentSuccess />} />
-        <Route path="/payment/cancel/:paymentId" element={<PaymentCancel />} />
-        <Route path="/dashboard" element={<Dashboard />} />
-      </Routes>
-    </BrowserRouter>
-  );
+**Réponse** (200 OK):
+```json
+{
+  "id": 1,
+  "name": "Plan Basic",
+  "duration_months": 1,
+  "price": "5000.00",
+  "price_per_month": 5000.00,
+  "max_listings": 3,
+  "is_premium": false,
+  "has_priority_support": false,
+  "has_featured_listings": false,
+  "description": "Plan d'entrée pour démarrer",
+  "is_active": true,
+  "features": [
+    "Jusqu'à 3 annonces",
+    "Durée: 1 mois"
+  ]
 }
-
-export default App;
 ```
 
-## 📱 Gestion d'erreurs
+---
 
-```javascript
-// src/utils/errorHandler.js
-export const handleApiError = (error) => {
-  if (error.response) {
-    // Erreur de réponse du serveur
-    const status = error.response.status;
-    const data = error.response.data;
+### 3. Plans recommandés
 
-    if (status === 401) {
-      // Non authentifié - rediriger vers login
-      window.location.href = '/login';
-      return 'Session expirée. Veuillez vous reconnecter.';
-    }
+**Endpoint**: `GET /plans/recommended/`
 
-    if (status === 403) {
-      return 'Vous n\'avez pas les permissions nécessaires.';
-    }
+**Permissions**: Public
 
-    if (status === 404) {
-      return 'Ressource introuvable.';
-    }
+**Description**: Retourne les 3 plans les plus populaires.
 
-    if (data.error) {
-      return data.error;
-    }
-
-    if (data.detail) {
-      return data.detail;
-    }
-
-    return 'Une erreur est survenue.';
+**Réponse** (200 OK):
+```json
+[
+  {
+    "id": 2,
+    "name": "Plan Premium",
+    "duration_months": 6,
+    "price": "25000.00",
+    "max_listings": -1,
+    "is_premium": true,
+    "has_priority_support": true,
+    "has_featured_listings": true,
+    "description": "Le meilleur rapport qualité/prix",
+    "is_active": true
   }
-
-  if (error.request) {
-    // Pas de réponse du serveur
-    return 'Impossible de contacter le serveur.';
-  }
-
-  // Autre erreur
-  return error.message || 'Une erreur inattendue est survenue.';
-};
+]
 ```
 
-## 🎯 Utilisation
+---
 
-```jsx
-import { handleApiError } from './utils/errorHandler';
-import { paymentService } from './services/paymentService';
+### 4. Créer un plan (Admin)
 
-const handlePayment = async () => {
-  try {
-    const result = await paymentService.initiatePayment(subscriptionId);
-    // Succès
-  } catch (error) {
-    const errorMessage = handleApiError(error);
-    setError(errorMessage);
-  }
-};
+**Endpoint**: `POST /plans/`
+
+**Permissions**: Admin uniquement
+
+**Body**:
+```json
+{
+  "name": "Plan Pro",
+  "duration_months": 3,
+  "price": "15000.00",
+  "max_listings": 10,
+  "is_premium": true,
+  "has_priority_support": true,
+  "has_featured_listings": false,
+  "description": "Plan professionnel",
+  "is_active": true
+}
 ```
+
+**Réponse** (201 Created):
+```json
+{
+  "id": 3,
+  "name": "Plan Pro",
+  "duration_months": 3,
+  "price": "15000.00",
+  "max_listings": 10,
+  "is_premium": true,
+  "has_priority_support": true,
+  "has_featured_listings": false,
+  "description": "Plan professionnel",
+  "is_active": true,
+  "features": [...]
+}
+```
+
+---
+
+### 5. Modifier un plan (Admin)
+
+**Endpoint**: `PUT /plans/{id}/` ou `PATCH /plans/{id}/`
+
+**Permissions**: Admin uniquement
+
+**Body**: Mêmes champs que la création (tous pour PUT, partiels pour PATCH)
+
+---
+
+### 6. Supprimer un plan (Admin)
+
+**Endpoint**: `DELETE /plans/{id}/`
+
+**Permissions**: Admin uniquement
+
+**Réponse** (204 No Content)
+
+---
+
+## Abonnements
+
+### 1. Liste des abonnements
+
+**Endpoint**: `GET /subscriptions/`
+
+**Permissions**: Authentifié
+
+**Description**: Liste les abonnements de l'utilisateur (tous pour admin).
+
+**Paramètres de requête**:
+- `status`: Filtrer par statut (`trial`, `active`, `expired`, `cancelled`)
+- `is_trial`: Filtrer par type (`true`, `false`)
+- `plan`: Filtrer par plan (ID)
+- `ordering`: Tri par date (`-created_at`, `start_date`, etc.)
+
+**Réponse** (200 OK):
+```json
+[
+  {
+    "id": 1,
+    "user": 5,
+    "user_name": "John Doe",
+    "plan": 2,
+    "plan_name": "Plan Premium",
+    "status": "active",
+    "start_date": "2025-01-01T00:00:00Z",
+    "end_date": "2025-07-01T00:00:00Z",
+    "is_trial": false,
+    "auto_renew": true,
+    "days_remaining": 157,
+    "is_currently_active": true,
+    "created_at": "2025-01-01T00:00:00Z"
+  }
+]
+```
+
+---
+
+### 2. Détails d'un abonnement
+
+**Endpoint**: `GET /subscriptions/{id}/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Réponse** (200 OK):
+```json
+{
+  "id": 1,
+  "user": 5,
+  "user_name": "John Doe",
+  "user_email": "john@example.com",
+  "plan": 2,
+  "plan_name": "Plan Premium",
+  "plan_details": {
+    "id": 2,
+    "name": "Plan Premium",
+    "duration_months": 6,
+    "price": "25000.00",
+    "max_listings": -1,
+    "is_premium": true,
+    "has_priority_support": true,
+    "has_featured_listings": true,
+    "description": "Le meilleur rapport qualité/prix",
+    "is_active": true
+  },
+  "status": "active",
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-07-01T00:00:00Z",
+  "is_trial": false,
+  "auto_renew": true,
+  "days_remaining": 157,
+  "is_currently_active": true,
+  "total_paid": 25000.00,
+  "created_at": "2025-01-01T00:00:00Z"
+}
+```
+
+---
+
+### 3. Créer un abonnement
+
+**Endpoint**: `POST /subscriptions/`
+
+**Permissions**: Authentifié
+
+**Description**: Crée un nouvel abonnement. Le premier abonnement est un essai gratuit d'1 mois.
+
+**Body**:
+```json
+{
+  "plan": 2,
+  "auto_renew": true
+}
+```
+
+**Réponse** (201 Created):
+```json
+{
+  "id": 2,
+  "user": 5,
+  "user_name": "John Doe",
+  "user_email": "john@example.com",
+  "plan": 2,
+  "plan_name": "Plan Premium",
+  "plan_details": {...},
+  "status": "trial",
+  "start_date": "2025-11-05T10:00:00Z",
+  "end_date": "2025-12-05T10:00:00Z",
+  "is_trial": true,
+  "auto_renew": true,
+  "days_remaining": 30,
+  "is_currently_active": true,
+  "total_paid": 0.00,
+  "created_at": "2025-11-05T10:00:00Z"
+}
+```
+
+**Erreurs possibles**:
+- 400: Plan inactif ou abonnement actif existant
+- 401: Non authentifié
+
+---
+
+### 4. Abonnement actuel
+
+**Endpoint**: `GET /subscriptions/current/`
+
+**Permissions**: Authentifié
+
+**Description**: Récupère l'abonnement actif de l'utilisateur connecté.
+
+**Réponse** (200 OK):
+```json
+{
+  "id": 1,
+  "user": 5,
+  "user_name": "John Doe",
+  "user_email": "john@example.com",
+  "plan": 2,
+  "plan_name": "Plan Premium",
+  "plan_details": {...},
+  "status": "active",
+  "start_date": "2025-01-01T00:00:00Z",
+  "end_date": "2025-07-01T00:00:00Z",
+  "is_trial": false,
+  "auto_renew": true,
+  "days_remaining": 157,
+  "is_currently_active": true,
+  "total_paid": 25000.00,
+  "created_at": "2025-01-01T00:00:00Z"
+}
+```
+
+**Réponse si aucun abonnement** (200 OK):
+```json
+{
+  "message": "Aucun abonnement actif",
+  "has_subscription": false
+}
+```
+
+---
+
+### 5. Statut d'abonnement
+
+**Endpoint**: `GET /subscriptions/status/`
+
+**Permissions**: Authentifié
+
+**Description**: Retourne le statut complet d'abonnement avec permissions de création d'annonces.
+
+**Réponse** (200 OK):
+```json
+{
+  "has_active_subscription": true,
+  "current_subscription": {
+    "id": 1,
+    "user": 5,
+    "plan": 2,
+    "plan_name": "Plan Premium",
+    "status": "active",
+    "start_date": "2025-01-01T00:00:00Z",
+    "end_date": "2025-07-01T00:00:00Z",
+    "is_trial": false,
+    "auto_renew": true,
+    "days_remaining": 157
+  },
+  "can_create_listings": true,
+  "remaining_listings": -1,
+  "days_remaining": 157
+}
+```
+
+**Sans abonnement**:
+```json
+{
+  "has_active_subscription": false,
+  "current_subscription": null,
+  "can_create_listings": false,
+  "remaining_listings": 0,
+  "days_remaining": 0
+}
+```
+
+---
+
+### 6. Historique des abonnements
+
+**Endpoint**: `GET /subscriptions/history/`
+
+**Permissions**: Authentifié
+
+**Description**: Liste tous les abonnements passés et présents de l'utilisateur.
+
+**Réponse** (200 OK): Liste d'abonnements
+
+---
+
+### 7. Annuler un abonnement
+
+**Endpoint**: `POST /subscriptions/{id}/cancel/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Description**: Annule un abonnement actif.
+
+**Réponse** (200 OK):
+```json
+{
+  "message": "Abonnement annulé avec succès",
+  "data": {
+    "id": 1,
+    "status": "cancelled",
+    "auto_renew": false,
+    ...
+  }
+}
+```
+
+**Erreurs**:
+- 400: Abonnement déjà terminé
+- 403: Non autorisé
+
+---
+
+### 8. Renouveler un abonnement
+
+**Endpoint**: `POST /subscriptions/{id}/renew/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Description**: Crée un nouvel abonnement à partir d'un abonnement expiré.
+
+**Réponse** (201 Created):
+```json
+{
+  "message": "Nouvel abonnement créé. Veuillez procéder au paiement.",
+  "data": {
+    "id": 3,
+    "status": "pending",
+    "start_date": "2025-11-05T10:00:00Z",
+    "end_date": "2026-05-05T10:00:00Z",
+    ...
+  }
+}
+```
+
+**Erreurs**:
+- 400: Abonnement actif existant
+- 403: Non autorisé
+
+---
+
+### 9. Modifier un abonnement
+
+**Endpoint**: `PATCH /subscriptions/{id}/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Body**:
+```json
+{
+  "auto_renew": false
+}
+```
+
+**Ou** (Admin seulement):
+```json
+{
+  "status": "active"
+}
+```
+
+**Réponse** (200 OK): Abonnement mis à jour
+
+---
+
+## Paiements
+
+### 1. Liste des paiements
+
+**Endpoint**: `GET /payments/`
+
+**Permissions**: Authentifié
+
+**Description**: Liste les paiements de l'utilisateur (tous pour admin).
+
+**Paramètres de requête**:
+- `status`: Filtrer par statut (`pending`, `completed`, `failed`, `cancelled`)
+- `payment_method`: Filtrer par méthode (`paydunya`)
+- `subscription`: Filtrer par abonnement (ID)
+- `ordering`: Tri (`-created_at`, `amount`, etc.)
+
+**Réponse** (200 OK):
+```json
+[
+  {
+    "id": 1,
+    "subscription": 1,
+    "subscription_plan": "Plan Premium",
+    "user_name": "John Doe",
+    "amount": "25000.00",
+    "payment_method": "paydunya",
+    "status": "completed",
+    "transaction_id": "PAY-ABC123DEF456",
+    "paid_at": "2025-01-01T12:30:00Z",
+    "created_at": "2025-01-01T12:00:00Z"
+  }
+]
+```
+
+---
+
+### 2. Détails d'un paiement
+
+**Endpoint**: `GET /payments/{id}/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Réponse** (200 OK):
+```json
+{
+  "id": 1,
+  "subscription": 1,
+  "subscription_plan": "Plan Premium",
+  "user_name": "John Doe",
+  "user_email": "john@example.com",
+  "amount": "25000.00",
+  "payment_method": "paydunya",
+  "status": "completed",
+  "transaction_id": "PAY-ABC123DEF456",
+  "payment_provider_response": {
+    "token": "xyz789token",
+    "response_code": "00",
+    "status": "completed",
+    "receipt_url": "https://app.paydunya.com/receipt/xyz789"
+  },
+  "paid_at": "2025-01-01T12:30:00Z",
+  "created_at": "2025-01-01T12:00:00Z"
+}
+```
+
+---
+
+### 3. Initier un paiement
+
+**Endpoint**: `POST /payments/initiate/`
+
+**Permissions**: Authentifié
+
+**Description**: Initie un paiement via PayDunya pour un abonnement.
+
+**Body**:
+```json
+{
+  "subscription": 1,
+  "payment_method": "paydunya",
+  "phone_number": "+22997123456"
+}
+```
+
+**Réponse** (201 Created):
+```json
+{
+  "message": "Paiement initié avec succès",
+  "payment": {
+    "id": 2,
+    "subscription": 1,
+    "amount": "25000.00",
+    "payment_method": "paydunya",
+    "status": "pending",
+    "transaction_id": "PAY-XYZ987UVW654",
+    "created_at": "2025-11-05T10:00:00Z"
+  },
+  "payment_url": "https://app.paydunya.com/sandbox-checkout/xyz789token",
+  "token": "xyz789token"
+}
+```
+
+**Instructions**:
+1. Rediriger l'utilisateur vers `payment_url`
+2. L'utilisateur effectue le paiement sur PayDunya
+3. PayDunya appelle le webhook `/payments/callback/`
+4. L'utilisateur est redirigé vers `return_url` (succès) ou `cancel_url` (annulation)
+
+**Erreurs**:
+- 400: Données invalides, essai gratuit, abonnement déjà actif
+- 401: Non authentifié
+- 403: Abonnement ne vous appartient pas
+
+---
+
+### 4. Callback PayDunya (Webhook)
+
+**Endpoint**: `POST /payments/callback/` ou `GET /payments/callback/`
+
+**Permissions**: Public (webhook PayDunya)
+
+**Description**: Endpoint appelé automatiquement par PayDunya après paiement.
+
+**Paramètres**:
+- `token`: Token de la transaction PayDunya
+
+**Réponse** (200 OK):
+```json
+{
+  "message": "Paiement confirmé avec succès",
+  "payment_id": 2
+}
+```
+
+**Ou pour échec**:
+```json
+{
+  "message": "Paiement annulé",
+  "payment_id": 2
+}
+```
+
+**Note**: Ce endpoint est appelé automatiquement par PayDunya. Ne pas l'appeler manuellement.
+
+---
+
+### 5. Vérifier un paiement
+
+**Endpoint**: `GET /payments/{id}/verify/`
+
+**Permissions**: Propriétaire ou Admin
+
+**Description**: Vérifie manuellement le statut d'un paiement auprès de PayDunya.
+
+**Réponse** (200 OK):
+```json
+{
+  "payment_id": 2,
+  "paydunya_status": "completed",
+  "response": {
+    "success": true,
+    "status": "completed",
+    "response_code": "00",
+    "custom_data": {...},
+    "receipt_url": "https://app.paydunya.com/receipt/xyz789"
+  }
+}
+```
+
+---
+
+### 6. Mes paiements
+
+**Endpoint**: `GET /payments/my_payments/`
+
+**Permissions**: Authentifié
+
+**Description**: Historique des paiements de l'utilisateur connecté.
+
+**Réponse** (200 OK): Liste de paiements
+
+---
+
+### 7. Mettre à jour le statut (Admin)
+
+**Endpoint**: `POST /payments/{id}/update_status/`
+
+**Permissions**: Admin uniquement
+
+**Description**: Met à jour manuellement le statut d'un paiement.
+
+**Body**:
+```json
+{
+  "status": "completed",
+  "payment_provider_response": {...},
+  "paid_at": "2025-11-05T10:30:00Z"
+}
+```
+
+**Réponse** (200 OK):
+```json
+{
+  "message": "Statut du paiement mis à jour",
+  "data": {
+    "id": 2,
+    "status": "completed",
+    ...
+  }
+}
+```
+
+**Note**: Si le statut passe à `completed`, l'abonnement associé est automatiquement activé.
+
+---
+
+### 8. Statistiques des paiements (Admin)
+
+**Endpoint**: `GET /payments/statistics/`
+
+**Permissions**: Admin uniquement
+
+**Paramètres de requête**:
+- `start_date`: Date de début (format: YYYY-MM-DD)
+- `end_date`: Date de fin (format: YYYY-MM-DD)
+
+**Réponse** (200 OK):
+```json
+{
+  "total_payments": 150,
+  "total_revenue": 3750000.00,
+  "by_method": {
+    "paydunya": {
+      "count": 150,
+      "revenue": 3750000.00
+    }
+  },
+  "by_status": {
+    "pending": 5,
+    "completed": 140,
+    "failed": 3,
+    "cancelled": 2
+  }
+}
+```
+
+---
+
+## Administration
+
+### Dashboard administrateur
+
+**Endpoint**: `GET /admin/dashboard/`
+
+**Permissions**: Admin uniquement
+
+**Description**: Statistiques globales du système d'abonnement.
+
+**Réponse** (200 OK):
+```json
+{
+  "total_subscriptions": 200,
+  "active_subscriptions": 150,
+  "trial_subscriptions": 30,
+  "expired_subscriptions": 20,
+  "total_revenue": 4500000.00,
+  "revenue_this_month": 450000.00,
+  "conversion_rate": 75.5
+}
+```
+
+**Explication des champs**:
+- `total_subscriptions`: Nombre total d'abonnements
+- `active_subscriptions`: Abonnements actifs (trial + active)
+- `trial_subscriptions`: Abonnements en période d'essai
+- `expired_subscriptions`: Abonnements expirés
+- `total_revenue`: Revenu total depuis le début
+- `revenue_this_month`: Revenu du mois en cours
+- `conversion_rate`: Taux de conversion essai → payant (%)
+
+---
+
+## Codes de statut
+
+### Codes HTTP
+
+- `200 OK`: Requête réussie
+- `201 Created`: Ressource créée avec succès
+- `204 No Content`: Suppression réussie
+- `400 Bad Request`: Données invalides
+- `401 Unauthorized`: Non authentifié
+- `403 Forbidden`: Non autorisé
+- `404 Not Found`: Ressource introuvable
+- `500 Internal Server Error`: Erreur serveur
+
+### Statuts d'abonnement
+
+- `trial`: Période d'essai gratuite
+- `active`: Abonnement actif et payé
+- `expired`: Abonnement expiré
+- `cancelled`: Abonnement annulé
+
+### Statuts de paiement
+
+- `pending`: En attente de confirmation
+- `completed`: Paiement confirmé
+- `failed`: Paiement échoué
+- `cancelled`: Paiement annulé
+
+---
+
+## Flux de travail typique
+
+### 1. Inscription et premier abonnement (essai gratuit)
+
+```
+1. GET /plans/ → Afficher les plans disponibles
+2. POST /subscriptions/ → Créer abonnement (auto essai gratuit 1 mois)
+3. GET /subscriptions/status/ → Vérifier le statut
+```
+
+### 2. Renouvellement après essai (paiement)
+
+```
+1. GET /subscriptions/current/ → Vérifier l'abonnement actuel
+2. POST /subscriptions/ → Créer nouvel abonnement (status: pending)
+3. POST /payments/initiate/ → Initier le paiement PayDunya
+4. → Redirection vers PayDunya pour paiement
+5. → PayDunya appelle /payments/callback/ (automatique)
+6. GET /subscriptions/status/ → Vérifier activation
+```
+
+### 3. Vérification avant création d'annonce
+
+```
+1. GET /subscriptions/status/ → Vérifier permissions
+2. Vérifier can_create_listings et remaining_listings
+3. POST /listings/ → Créer l'annonce si autorisé
+```
+
+---
+
+## Notes importantes
+
+### PayDunya
+
+- Mode test: Utiliser les numéros de test PayDunya
+- Mode production: Configurer les vraies clés API dans settings.py
+- Timeout des requêtes: 30 secondes
+- Le callback est appelé automatiquement par PayDunya
+
+### Sécurité
+
+- Toujours vérifier les permissions avant modification
+- Les tokens JWT expirent après 24h (configurable)
+- Les webhooks PayDunya n'ont pas d'authentification (IP whitelisting recommandé)
+
+
+## Support
+
+Pour toute question ou problème, contactez ASSOUMA Z. Billa.

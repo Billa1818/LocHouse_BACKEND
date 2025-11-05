@@ -28,6 +28,8 @@ urlpatterns = [
         path('core/', include('core.urls')),
         path('listings/', include('listings.urls')),
         path('interactions/', include('interactions.urls')),
+        path('subscriptions/', include('subscriptions.urls')),
+
     ])),
 ]
 
