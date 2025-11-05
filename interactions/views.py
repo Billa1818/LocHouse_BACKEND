@@ -1,280 +1,303 @@
-from rest_framework import viewsets, status, filters
+# ============================================================================
+# interactions/views.py
+# ============================================================================
+from rest_framework import viewsets, status, filters, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnly, AllowAny
+from rest_framework.permissions import IsAuthenticated, AllowAny
+from django.db.models import Q, Count, Avg
+from django.shortcuts import get_object_or_404
 from django_filters.rest_framework import DjangoFilterBackend
-from django.db.models import Q, Avg, Count
-from django.utils import timezone
 
 from .models import AvailabilityRequest, ContactMessage, Review, Favorite
 from .serializers import (
-    AvailabilityRequestListSerializer,
-    AvailabilityRequestDetailSerializer,
-    AvailabilityRequestCreateSerializer,
-    AvailabilityRequestStatusUpdateSerializer,
+    AvailabilityRequestSerializer,
+    AvailabilityRequestUpdateSerializer,
+    ContactMessageSerializer,
     ContactMessageListSerializer,
-    ContactMessageDetailSerializer,
-    ContactMessageCreateSerializer,
-    ReviewListSerializer,
-    ReviewDetailSerializer,
-    ReviewCreateUpdateSerializer,
+    ReviewSerializer,
     ReviewModerationSerializer,
-    FavoriteListSerializer,
-    FavoriteCreateSerializer,
-    ListingReviewStatsSerializer
+    FavoriteSerializer
 )
-from .permissions import IsOwnerOrReadOnly, IsRequestOwnerOrListingOwner, IsReviewAuthor, IsAdmin
+from listings.models import Listing
 
 
 # ============================================================================
-# AvailabilityRequest ViewSet
+# CUSTOM PERMISSIONS
 # ============================================================================
+class IsOwnerOrReadOnly(permissions.BasePermission):
+    """Permission personnalisée : propriétaire ou lecture seule"""
+    
+    def has_object_permission(self, request, view, obj):
+        if request.method in permissions.SAFE_METHODS:
+            return True
+        
+        # Pour AvailabilityRequest, vérifier si c'est le requester ou le owner du listing
+        if isinstance(obj, AvailabilityRequest):
+            return obj.requester == request.user or obj.listing.owner == request.user
+        
+        # Pour les autres modèles
+        if hasattr(obj, 'user'):
+            return obj.user == request.user
+        if hasattr(obj, 'author'):
+            return obj.author == request.user
+        
+        return False
 
+
+class IsListingOwner(permissions.BasePermission):
+    """Permission : propriétaire du listing concerné"""
+    
+    def has_object_permission(self, request, view, obj):
+        if hasattr(obj, 'listing'):
+            return obj.listing.owner == request.user
+        return False
+
+
+class IsAdminUser(permissions.BasePermission):
+    """Permission : utilisateur admin"""
+    
+    def has_permission(self, request, view):
+        return request.user and request.user.user_type == 'admin'
+
+
+# ============================================================================
+# AVAILABILITY REQUEST VIEWSET
+# ============================================================================
 class AvailabilityRequestViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour les demandes de disponibilité.
-    - Locataires: créer des demandes, voir leurs propres demandes
-    - Propriétaires: voir les demandes reçues, mettre à jour le statut
+    ViewSet pour les demandes de disponibilité
+    
+    - Locataires : peuvent créer des demandes
+    - Propriétaires : peuvent voir les demandes pour leurs annonces et modifier le statut
+    - Admins : accès complet
     """
+    queryset = AvailabilityRequest.objects.select_related(
+        'listing', 'requester', 'listing__owner', 'listing__property_group'
+    )
     permission_classes = [IsAuthenticated]
-    filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
+    filter_backends = [DjangoFilterBackend, filters.OrderingFilter, filters.SearchFilter]
     filterset_fields = ['status', 'listing']
     ordering_fields = ['created_at', 'check_in_date']
-    ordering = ['-created_at']
-    
-    def get_queryset(self):
-        """
-        Filtrer les demandes selon le rôle:
-        - Locataire: ses propres demandes
-        - Propriétaire: demandes pour ses annonces
-        - Admin: toutes les demandes
-        """
-        user = self.request.user
-        
-        if user.is_staff:
-            return AvailabilityRequest.objects.all()
-        
-        if user.user_type == 'proprietaire':
-            # Propriétaire voit les demandes pour ses annonces
-            return AvailabilityRequest.objects.filter(
-                listing__owner=user
-            )
-        
-        # Locataire voit ses propres demandes
-        return AvailabilityRequest.objects.filter(requester=user)
+    search_fields = ['message', 'listing__title']
     
     def get_serializer_class(self):
-        if self.action == 'list':
-            return AvailabilityRequestListSerializer
-        elif self.action == 'create':
-            return AvailabilityRequestCreateSerializer
-        elif self.action == 'update_status':
-            return AvailabilityRequestStatusUpdateSerializer
-        return AvailabilityRequestDetailSerializer
+        if self.action == 'update_status':
+            return AvailabilityRequestUpdateSerializer
+        return AvailabilityRequestSerializer
+    
+    def get_queryset(self):
+        """Filtrer selon le type d'utilisateur"""
+        user = self.request.user
+        
+        if user.user_type == 'admin':
+            return self.queryset
+        elif user.user_type == 'proprietaire':
+            # Propriétaires : voir les demandes pour leurs annonces
+            return self.queryset.filter(listing__owner=user)
+        else:
+            # Locataires : voir leurs propres demandes
+            return self.queryset.filter(requester=user)
     
     def perform_create(self, serializer):
-        """Créer une demande et envoyer notification au propriétaire"""
-        request_obj = serializer.save()
+        """Associer le requester à la demande"""
+        serializer.save(requester=self.request.user)
+    
+    @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated, IsListingOwner])
+    def update_status(self, request, pk=None):
+        """
+        Mise à jour du statut de la demande (propriétaire uniquement)
         
-        # Vérifier si les notifications sont activées pour ce groupe
-        if request_obj.listing.are_notifications_enabled():
-            # TODO: Envoyer notification email/SMS au propriétaire
-            request_obj.owner_notified = True
-            request_obj.save()
+        PATCH /api/availability-requests/{id}/update_status/
+        Body: {"status": "contacted"}
+        """
+        availability_request = self.get_object()
+        serializer = self.get_serializer(availability_request, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        return Response({
+            'message': 'Statut mis à jour avec succès',
+            'data': AvailabilityRequestSerializer(availability_request).data
+        })
     
     @action(detail=False, methods=['get'])
     def my_requests(self, request):
-        """Obtenir toutes les demandes de l'utilisateur connecté (locataire)"""
-        requests = AvailabilityRequest.objects.filter(
-            requester=request.user
-        ).order_by('-created_at')
+        """
+        Liste des demandes de l'utilisateur connecté
         
-        serializer = AvailabilityRequestListSerializer(
-            requests,
-            many=True,
-            context={'request': request}
-        )
+        GET /api/availability-requests/my_requests/
+        """
+        requests = self.get_queryset().filter(requester=request.user)
+        page = self.paginate_queryset(requests)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(requests, many=True)
         return Response(serializer.data)
     
-    @action(detail=False, methods=['get'])
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated])
     def received_requests(self, request):
-        """Obtenir les demandes reçues (propriétaire)"""
+        """
+        Demandes reçues par le propriétaire
+        
+        GET /api/availability-requests/received_requests/
+        """
         if request.user.user_type != 'proprietaire':
             return Response(
-                {'error': 'Accès réservé aux propriétaires'},
+                {'error': 'Cette action est réservée aux propriétaires'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        requests = AvailabilityRequest.objects.filter(
-            listing__owner=request.user
-        ).order_by('-created_at')
+        requests = self.get_queryset().filter(listing__owner=request.user)
         
-        serializer = AvailabilityRequestListSerializer(
-            requests,
-            many=True,
-            context={'request': request}
-        )
+        # Filtres optionnels
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            requests = requests.filter(status=status_filter)
+        
+        listing_id = request.query_params.get('listing_id')
+        if listing_id:
+            requests = requests.filter(listing_id=listing_id)
+        
+        page = self.paginate_queryset(requests)
+        
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = self.get_serializer(requests, many=True)
         return Response(serializer.data)
-    
-    @action(detail=True, methods=['post'])
-    def update_status(self, request, pk=None):
-        """Mettre à jour le statut d'une demande (propriétaire uniquement)"""
-        availability_request = self.get_object()
-        
-        # Vérifier que c'est le propriétaire de l'annonce
-        if availability_request.listing.owner != request.user and not request.user.is_staff:
-            return Response(
-                {'error': 'Vous n\'êtes pas autorisé à modifier cette demande'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        serializer = AvailabilityRequestStatusUpdateSerializer(
-            availability_request,
-            data=request.data,
-            partial=True
-        )
-        
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                'message': 'Statut mis à jour avec succès',
-                'data': AvailabilityRequestDetailSerializer(
-                    availability_request,
-                    context={'request': request}
-                ).data
-            })
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 # ============================================================================
-# ContactMessage ViewSet
+# CONTACT MESSAGE VIEWSET
 # ============================================================================
-
 class ContactMessageViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour les messages de contact.
-    - Création de messages (locataires -> propriétaires)
-    - Consultation des conversations
+    ViewSet pour les messages de contact
+    
+    - Locataires : peuvent envoyer des messages
+    - Propriétaires : peuvent voir et répondre aux messages
+    - Révélation du contact après le premier message
     """
+    queryset = ContactMessage.objects.select_related(
+        'listing', 'sender', 'receiver', 'listing__owner', 'listing__property_group'
+    )
     permission_classes = [IsAuthenticated]
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
     filterset_fields = ['listing', 'is_read']
-    ordering = ['-created_at']
-    
-    def get_queryset(self):
-        """
-        Filtrer les messages:
-        - Utilisateur voit les messages qu'il a envoyés ou reçus
-        """
-        user = self.request.user
-        
-        if user.is_staff:
-            return ContactMessage.objects.all()
-        
-        return ContactMessage.objects.filter(
-            Q(sender=user) | Q(receiver=user)
-        )
+    ordering_fields = ['created_at']
     
     def get_serializer_class(self):
         if self.action == 'list':
             return ContactMessageListSerializer
-        elif self.action == 'create':
-            return ContactMessageCreateSerializer
-        return ContactMessageDetailSerializer
+        return ContactMessageSerializer
     
-    def perform_create(self, serializer):
-        """Créer un message et envoyer notification"""
-        message = serializer.save()
+    def get_queryset(self):
+        """Filtrer les messages de l'utilisateur"""
+        user = self.request.user
         
-        # Si c'est le premier contact, débloquer les infos de contact
-        if message.is_first_contact:
-            # TODO: Logique pour révéler email/téléphone du propriétaire
-            pass
+        if user.user_type == 'admin':
+            return self.queryset
         
-        # Vérifier si les notifications sont activées
-        if message.listing.are_notifications_enabled():
-            # TODO: Envoyer notification au destinataire
-            pass
-    
-    def retrieve(self, request, *args, **kwargs):
-        """Marquer comme lu lors de la lecture"""
-        instance = self.get_object()
-        
-        # Marquer comme lu si c'est le destinataire qui lit
-        if instance.receiver == request.user and not instance.is_read:
-            instance.is_read = True
-            instance.save()
-        
-        serializer = self.get_serializer(instance)
-        return Response(serializer.data)
+        # Messages où l'utilisateur est sender ou receiver
+        return self.queryset.filter(Q(sender=user) | Q(receiver=user))
     
     @action(detail=False, methods=['get'])
     def conversations(self, request):
-        """Obtenir la liste des conversations groupées par annonce"""
+        """
+        Liste des conversations groupées par listing
+        
+        GET /api/messages/conversations/
+        """
         user = request.user
         
-        # Récupérer tous les messages de l'utilisateur
-        messages = ContactMessage.objects.filter(
-            Q(sender=user) | Q(receiver=user)
-        ).order_by('-created_at')
+        # Récupérer tous les listings où l'utilisateur a des messages
+        messages = self.get_queryset().order_by('listing', '-created_at')
         
-        # Grouper par annonce
+        # Grouper par listing (garder le dernier message de chaque conversation)
         conversations = {}
         for message in messages:
             listing_id = message.listing.id
             if listing_id not in conversations:
-                conversations[listing_id] = {
-                    'listing_id': listing_id,
-                    'listing_title': message.listing.title,
-                    'last_message': message.message,
-                    'last_message_at': message.created_at,
-                    'unread_count': 0,
-                    'other_user': None
-                }
-            
-            # Compter les non lus (reçus uniquement)
-            if message.receiver == user and not message.is_read:
-                conversations[listing_id]['unread_count'] += 1
-            
-            # Déterminer l'autre utilisateur
-            if message.sender == user:
-                conversations[listing_id]['other_user'] = message.receiver.get_full_name()
-            else:
-                conversations[listing_id]['other_user'] = message.sender.get_full_name()
+                conversations[listing_id] = message
         
-        return Response(list(conversations.values()))
+        # Sérialiser
+        serializer = ContactMessageListSerializer(
+            list(conversations.values()),
+            many=True,
+            context={'request': request}
+        )
+        
+        return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
-    def by_listing(self, request):
-        """Obtenir les messages d'une conversation spécifique"""
+    def conversation_detail(self, request):
+        """
+        Détail d'une conversation pour un listing spécifique
+        
+        GET /api/messages/conversation_detail/?listing_id=123
+        """
         listing_id = request.query_params.get('listing_id')
         
         if not listing_id:
             return Response(
-                {'error': 'listing_id requis'},
+                {'error': 'listing_id est requis'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        messages = ContactMessage.objects.filter(
-            Q(sender=request.user) | Q(receiver=request.user),
-            listing_id=listing_id
-        ).order_by('created_at')
+        # Récupérer tous les messages de cette conversation
+        messages = self.get_queryset().filter(listing_id=listing_id).order_by('created_at')
         
-        # Marquer comme lus les messages reçus
+        if not messages.exists():
+            return Response(
+                {'error': 'Aucune conversation trouvée'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Marquer comme lu les messages reçus
         messages.filter(receiver=request.user, is_read=False).update(is_read=True)
         
-        serializer = ContactMessageListSerializer(
+        serializer = ContactMessageSerializer(
             messages,
             many=True,
             context={'request': request}
         )
+        
         return Response(serializer.data)
+    
+    @action(detail=True, methods=['patch'])
+    def mark_as_read(self, request, pk=None):
+        """
+        Marquer un message comme lu
+        
+        PATCH /api/messages/{id}/mark_as_read/
+        """
+        message = self.get_object()
+        
+        # Vérifier que c'est bien le receiver
+        if message.receiver != request.user:
+            return Response(
+                {'error': 'Vous ne pouvez marquer comme lu que vos messages reçus'},
+                status=status.HTTP_403_FORBIDDEN
+            )
+        
+        message.is_read = True
+        message.save(update_fields=['is_read'])
+        
+        return Response({'message': 'Message marqué comme lu'})
     
     @action(detail=False, methods=['get'])
     def unread_count(self, request):
-        """Nombre de messages non lus"""
-        count = ContactMessage.objects.filter(
+        """
+        Nombre de messages non lus
+        
+        GET /api/messages/unread_count/
+        """
+        count = self.get_queryset().filter(
             receiver=request.user,
             is_read=False
         ).count()
@@ -283,282 +306,217 @@ class ContactMessageViewSet(viewsets.ModelViewSet):
 
 
 # ============================================================================
-# Review ViewSet
+# REVIEW VIEWSET
 # ============================================================================
-
 class ReviewViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour les avis.
-    - Public: voir les avis approuvés
-    - Locataires: créer/modifier leurs avis
-    - Admin: modérer les avis
+    ViewSet pour les avis
+    
+    - Locataires : peuvent créer et modifier leurs avis
+    - Public : peut voir les avis approuvés
+    - Admins : peuvent modérer les avis
     """
-    permission_classes = [IsAuthenticatedOrReadOnly]
+    queryset = Review.objects.select_related('listing', 'author')
     filter_backends = [DjangoFilterBackend, filters.OrderingFilter]
-    filterset_fields = ['listing', 'rating', 'status']
+    filterset_fields = ['listing', 'status', 'rating']
     ordering_fields = ['created_at', 'rating']
-    ordering = ['-created_at']
-    
-    def get_queryset(self):
-        """
-        Filtrer les avis selon le rôle:
-        - Public: avis approuvés uniquement
-        - Auteur: ses propres avis (tous statuts)
-        - Admin: tous les avis
-        """
-        if self.request.user.is_staff:
-            return Review.objects.all()
-        
-        if self.request.user.is_authenticated:
-            # Utilisateurs authentifiés voient:
-            # - Les avis approuvés (tous)
-            # - Leurs propres avis (tous statuts)
-            return Review.objects.filter(
-                Q(status='approved') | Q(author=self.request.user)
-            )
-        
-        # Public: avis approuvés uniquement
-        return Review.objects.filter(status='approved')
-    
-    def get_serializer_class(self):
-        if self.action == 'list':
-            return ReviewListSerializer
-        elif self.action in ['create', 'update', 'partial_update']:
-            return ReviewCreateUpdateSerializer
-        elif self.action == 'moderate':
-            return ReviewModerationSerializer
-        return ReviewDetailSerializer
     
     def get_permissions(self):
         """Permissions selon l'action"""
-        if self.action in ['create']:
-            return [IsAuthenticated()]
-        elif self.action in ['update', 'partial_update', 'destroy']:
-            return [IsAuthenticated(), IsReviewAuthor()]
+        if self.action in ['list', 'retrieve']:
+            return [AllowAny()]
         elif self.action in ['moderate', 'pending_reviews']:
-            return [IsAuthenticated(), IsAdmin()]
-        return [AllowAny()]
+            return [IsAuthenticated(), IsAdminUser()]
+        return [IsAuthenticated()]
+    
+    def get_serializer_class(self):
+        if self.action == 'moderate':
+            return ReviewModerationSerializer
+        return ReviewSerializer
+    
+    def get_queryset(self):
+        """Filtrer selon le contexte"""
+        user = self.request.user
+        
+        # Public : seulement les avis approuvés
+        if not user.is_authenticated:
+            return self.queryset.filter(status='approved')
+        
+        # Admin : tous les avis
+        if user.user_type == 'admin':
+            return self.queryset
+        
+        # Propriétaires : avis approuvés + avis sur leurs annonces
+        if user.user_type == 'proprietaire':
+            return self.queryset.filter(
+                Q(status='approved') | Q(listing__owner=user)
+            )
+        
+        # Locataires : avis approuvés + leurs propres avis
+        return self.queryset.filter(
+            Q(status='approved') | Q(author=user)
+        )
+    
+    def perform_create(self, serializer):
+        """Associer l'auteur"""
+        serializer.save(author=self.request.user)
+    
+    @action(detail=True, methods=['patch'], permission_classes=[IsAuthenticated, IsAdminUser])
+    def moderate(self, request, pk=None):
+        """
+        Modérer un avis (admin uniquement)
+        
+        PATCH /api/reviews/{id}/moderate/
+        Body: {"status": "approved"} ou {"status": "rejected", "rejection_reason": "..."}
+        """
+        review = self.get_object()
+        serializer = self.get_serializer(review, data=request.data, partial=True)
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        
+        return Response({
+            'message': 'Avis modéré avec succès',
+            'data': ReviewSerializer(review).data
+        })
+    
+    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated, IsAdminUser])
+    def pending_reviews(self, request):
+        """
+        Liste des avis en attente de modération
+        
+        GET /api/reviews/pending_reviews/
+        """
+        reviews = self.queryset.filter(status='pending').order_by('-created_at')
+        page = self.paginate_queryset(reviews)
+        
+        if page is not None:
+            serializer = ReviewSerializer(page, many=True, context={'request': request})
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = ReviewSerializer(reviews, many=True, context={'request': request})
+        return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
     def my_reviews(self, request):
-        """Obtenir les avis de l'utilisateur connecté"""
+        """
+        Avis de l'utilisateur connecté
+        
+        GET /api/reviews/my_reviews/
+        """
         if not request.user.is_authenticated:
             return Response(
-                {'error': 'Authentification requise'},
+                {'error': 'Authentication requise'},
                 status=status.HTTP_401_UNAUTHORIZED
             )
         
-        reviews = Review.objects.filter(author=request.user)
-        serializer = ReviewListSerializer(
-            reviews,
-            many=True,
-            context={'request': request}
-        )
+        reviews = self.queryset.filter(author=request.user)
+        serializer = ReviewSerializer(reviews, many=True, context={'request': request})
         return Response(serializer.data)
     
     @action(detail=False, methods=['get'])
-    def by_listing(self, request):
-        """Obtenir les avis d'une annonce spécifique"""
+    def listing_stats(self, request):
+        """
+        Statistiques des avis pour un listing
+        
+        GET /api/reviews/listing_stats/?listing_id=123
+        """
         listing_id = request.query_params.get('listing_id')
         
         if not listing_id:
             return Response(
-                {'error': 'listing_id requis'},
+                {'error': 'listing_id est requis'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        reviews = Review.objects.filter(
-            listing_id=listing_id,
-            status='approved'
-        ).order_by('-created_at')
+        reviews = self.queryset.filter(listing_id=listing_id, status='approved')
         
-        serializer = ReviewListSerializer(
-            reviews,
-            many=True,
-            context={'request': request}
-        )
-        
-        # Ajouter les statistiques
         stats = reviews.aggregate(
-            total=Count('id'),
-            average=Avg('rating')
+            average_rating=Avg('rating'),
+            total_reviews=Count('id')
         )
-        
-        return Response({
-            'reviews': serializer.data,
-            'statistics': {
-                'total_reviews': stats['total'] or 0,
-                'average_rating': round(stats['average'] or 0, 1)
-            }
-        })
-    
-    @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsAdmin])
-    def moderate(self, request, pk=None):
-        """Modérer un avis (Admin uniquement)"""
-        review = self.get_object()
-        serializer = ReviewModerationSerializer(
-            review,
-            data=request.data,
-            partial=True
-        )
-        
-        if serializer.is_valid():
-            serializer.save()
-            return Response({
-                'message': 'Avis modéré avec succès',
-                'data': ReviewDetailSerializer(review, context={'request': request}).data
-            })
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated, IsAdmin])
-    def pending_reviews(self, request):
-        """Liste des avis en attente de modération (Admin)"""
-        pending = Review.objects.filter(status='pending').order_by('-created_at')
-        serializer = ReviewListSerializer(
-            pending,
-            many=True,
-            context={'request': request}
-        )
-        return Response(serializer.data)
-    
-    @action(detail=False, methods=['get'])
-    def statistics(self, request):
-        """Statistiques globales des avis"""
-        listing_id = request.query_params.get('listing_id')
-        
-        if not listing_id:
-            return Response(
-                {'error': 'listing_id requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        reviews = Review.objects.filter(
-            listing_id=listing_id,
-            status='approved'
-        )
-        
-        # Calculer les statistiques
-        total_reviews = reviews.count()
-        average_rating = reviews.aggregate(Avg('rating'))['rating__avg'] or 0
         
         # Distribution des notes
-        rating_distribution = {
-            '5': reviews.filter(rating=5).count(),
-            '4': reviews.filter(rating=4).count(),
-            '3': reviews.filter(rating=3).count(),
-            '2': reviews.filter(rating=2).count(),
-            '1': reviews.filter(rating=1).count(),
-        }
-        
-        # Avis récents
-        recent_reviews = reviews.order_by('-created_at')[:5]
+        rating_distribution = {}
+        for i in range(1, 6):
+            rating_distribution[f'rating_{i}'] = reviews.filter(rating=i).count()
         
         return Response({
-            'total_reviews': total_reviews,
-            'average_rating': round(average_rating, 1),
-            'rating_distribution': rating_distribution,
-            'recent_reviews': ReviewListSerializer(
-                recent_reviews,
-                many=True,
-                context={'request': request}
-            ).data
+            'average_rating': round(stats['average_rating'], 1) if stats['average_rating'] else 0,
+            'total_reviews': stats['total_reviews'],
+            'rating_distribution': rating_distribution
         })
 
 
 # ============================================================================
-# Favorite ViewSet
+# FAVORITE VIEWSET
 # ============================================================================
-
 class FavoriteViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour les favoris.
-    - Utilisateurs authentifiés peuvent gérer leurs favoris
+    ViewSet pour les favoris
+    
+    - Utilisateurs authentifiés : peuvent gérer leurs favoris
     """
+    queryset = Favorite.objects.select_related('listing', 'user', 'listing__owner')
+    serializer_class = FavoriteSerializer
     permission_classes = [IsAuthenticated]
-    filter_backends = [filters.OrderingFilter]
-    ordering = ['-created_at']
     http_method_names = ['get', 'post', 'delete']  # Pas de PUT/PATCH
     
     def get_queryset(self):
-        """Filtrer les favoris de l'utilisateur connecté"""
-        return Favorite.objects.filter(user=self.request.user)
-    
-    def get_serializer_class(self):
-        if self.action == 'create':
-            return FavoriteCreateSerializer
-        return FavoriteListSerializer
-    
-    def destroy(self, request, *args, **kwargs):
-        """Supprimer un favori"""
-        instance = self.get_object()
-        
-        # Vérifier que c'est bien l'utilisateur propriétaire
-        if instance.user != request.user:
-            return Response(
-                {'error': 'Vous ne pouvez supprimer que vos propres favoris'},
-                status=status.HTTP_403_FORBIDDEN
-            )
-        
-        instance.delete()
-        return Response(
-            {'message': 'Favori supprimé avec succès'},
-            status=status.HTTP_204_NO_CONTENT
-        )
+        """Filtrer les favoris de l'utilisateur"""
+        return self.queryset.filter(user=self.request.user)
     
     @action(detail=False, methods=['post'])
     def toggle(self, request):
-        """Ajouter/retirer un favori (toggle)"""
-        listing_id = request.data.get('listing_id')
+        """
+        Ajouter/retirer des favoris
+        
+        POST /api/favorites/toggle/
+        Body: {"listing": 123}
+        """
+        listing_id = request.data.get('listing')
         
         if not listing_id:
             return Response(
-                {'error': 'listing_id requis'},
+                {'error': 'listing est requis'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        try:
-            favorite = Favorite.objects.get(
-                user=request.user,
-                listing_id=listing_id
-            )
-            # Existe déjà, on supprime
+        listing = get_object_or_404(Listing, id=listing_id, status='published')
+        
+        # Vérifier si déjà en favoris
+        favorite = Favorite.objects.filter(user=request.user, listing=listing).first()
+        
+        if favorite:
+            # Retirer des favoris
             favorite.delete()
             return Response({
                 'message': 'Retiré des favoris',
                 'is_favorite': False
             })
-        except Favorite.DoesNotExist:
-            # N'existe pas, on ajoute
-            serializer = FavoriteCreateSerializer(
-                data={'listing': listing_id},
-                context={'request': request}
-            )
-            
-            if serializer.is_valid():
-                serializer.save()
-                return Response({
-                    'message': 'Ajouté aux favoris',
-                    'is_favorite': True,
-                    'data': serializer.data
-                }, status=status.HTTP_201_CREATED)
-            
-            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        else:
+            # Ajouter aux favoris
+            favorite = Favorite.objects.create(user=request.user, listing=listing)
+            return Response({
+                'message': 'Ajouté aux favoris',
+                'is_favorite': True,
+                'data': self.get_serializer(favorite).data
+            }, status=status.HTTP_201_CREATED)
     
     @action(detail=False, methods=['get'])
     def check(self, request):
-        """Vérifier si une annonce est dans les favoris"""
+        """
+        Vérifier si un listing est en favoris
+        
+        GET /api/favorites/check/?listing_id=123
+        """
         listing_id = request.query_params.get('listing_id')
         
         if not listing_id:
             return Response(
-                {'error': 'listing_id requis'},
+                {'error': 'listing_id est requis'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        is_favorite = Favorite.objects.filter(
-            user=request.user,
-            listing_id=listing_id
-        ).exists()
+        is_favorite = self.get_queryset().filter(listing_id=listing_id).exists()
         
         return Response({'is_favorite': is_favorite})

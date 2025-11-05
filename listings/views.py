@@ -5,7 +5,7 @@ from rest_framework.permissions import IsAuthenticated, IsAuthenticatedOrReadOnl
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db.models import Q, Count
 from django.utils import timezone
-
+from interactions.models import Favorite
 from .models import PropertyGroup, Listing, ListingAmenity, ListingMedia
 from .serializers import (
     PropertyGroupListSerializer,
@@ -265,10 +265,19 @@ class ListingViewSet(viewsets.ModelViewSet):
     
     @action(detail=True, methods=['post'])
     def add_to_favorites(self, request, pk=None):
-        """Ajouter aux favoris (à implémenter avec le module favoris)"""
-        # TODO: Implémenter la logique des favoris
+        """Ajouter aux favoris d'un locataire"""
+        if not request.user.is_authenticated:
+            return Response(
+                {'error': 'Authentification requise'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        # Ajouter à la liste des favoris
+        listing = self.get_object()
+        Favorite.objects.get_or_create(user=request.user, listing=listing)
+
         return Response({
-            'message': 'Fonctionnalité à venir',
+            'message': 'Ajouté aux favoris avec succès',
             'listing_id': pk
         })
     

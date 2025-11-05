@@ -7,9 +7,12 @@ from django.db.models import Q, Sum, Count
 from django.utils import timezone
 from dateutil.relativedelta import relativedelta
 import uuid
+import requests
+from django.conf import settings
 
 from .models import SubscriptionPlan, Subscription, Payment
 from listings.models import Listing
+from core.models import Notification
 from .serializers import (
     SubscriptionPlanListSerializer,
     SubscriptionPlanDetailSerializer,
@@ -30,6 +33,130 @@ from .permissions import IsOwner, IsAdmin
 
 
 # ============================================================================
+# PayDunya Configuration
+# ============================================================================
+
+class PayDunyaService:
+    """Service pour gérer les paiements via PayDunya"""
+    
+    def __init__(self):
+        self.base_url = "https://app.paydunya.com/api/v1"
+        self.master_key = settings.PAYDUNYA_MASTER_KEY
+        self.private_key = settings.PAYDUNYA_PRIVATE_KEY
+        self.token = settings.PAYDUNYA_TOKEN
+        self.mode = getattr(settings, 'PAYDUNYA_MODE', 'test')
+        
+    def get_headers(self):
+        """Headers pour les requêtes PayDunya"""
+        return {
+            'Content-Type': 'application/json',
+            'PAYDUNYA-MASTER-KEY': self.master_key,
+            'PAYDUNYA-PRIVATE-KEY': self.private_key,
+            'PAYDUNYA-TOKEN': self.token
+        }
+    
+    def create_invoice(self, payment, user, callback_url, return_url, cancel_url):
+        """Créer une facture PayDunya"""
+        
+        invoice_data = {
+            'invoice': {
+                'total_amount': float(payment.amount),
+                'description': f"Abonnement {payment.subscription.plan.name} - {payment.subscription.plan.duration_months} mois"
+            },
+            'store': {
+                'name': getattr(settings, 'PAYDUNYA_STORE_NAME', 'LOMIMO'),
+                'tagline': getattr(settings, 'PAYDUNYA_STORE_TAGLINE', 'Plateforme de location immobilière'),
+                'website_url': getattr(settings, 'SITE_URL', 'https://lomimo.com')
+            },
+            'custom_data': {
+                'payment_id': str(payment.id),
+                'subscription_id': str(payment.subscription.id),
+                'user_id': str(user.id)
+            },
+            'actions': {
+                'callback_url': callback_url,
+                'return_url': return_url,
+                'cancel_url': cancel_url
+            }
+        }
+        
+        try:
+            response = requests.post(
+                f"{self.base_url}/checkout-invoice/create",
+                json=invoice_data,
+                headers=self.get_headers(),
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'success': True,
+                    'token': data.get('token'),
+                    'response_code': data.get('response_code'),
+                    'response_text': data.get('response_text'),
+                    'description': data.get('description'),
+                    'invoice_url': data.get('response_text')  # URL de paiement
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': response.json()
+                }
+                
+        except requests.exceptions.RequestException as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    def confirm_invoice(self, token):
+        """Confirmer le statut d'une facture PayDunya"""
+        try:
+            response = requests.get(
+                f"{self.base_url}/checkout-invoice/confirm/{token}",
+                headers=self.get_headers(),
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    'success': True,
+                    'status': data.get('status'),
+                    'response_code': data.get('response_code'),
+                    'custom_data': data.get('custom_data'),
+                    'receipt_url': data.get('receipt_url')
+                }
+            else:
+                return {
+                    'success': False,
+                    'error': response.json()
+                }
+                
+        except requests.exceptions.RequestException as e:
+            return {
+                'success': False,
+                'error': str(e)
+            }
+
+
+# ============================================================================
+# Notification Helper
+# ============================================================================
+
+def create_notification(user, notification_type, title, message, link=None):
+    """Créer une notification pour l'utilisateur"""
+    return Notification.objects.create(
+        user=user,
+        notification_type=notification_type,
+        title=title,
+        message=message,
+        link=link
+    )
+
+
+# ============================================================================
 # SubscriptionPlan ViewSet
 # ============================================================================
 
@@ -47,10 +174,7 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Filtrer les plans selon le rôle"""
         if self.request.user.is_staff:
-            # Admin voit tous les plans
             return SubscriptionPlan.objects.all()
-        
-        # Public voit uniquement les plans actifs
         return SubscriptionPlan.objects.filter(is_active=True)
     
     def get_serializer_class(self):
@@ -69,7 +193,6 @@ class SubscriptionPlanViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'])
     def recommended(self, request):
         """Plans recommandés selon le profil utilisateur"""
-        # Logique simple: plans les plus populaires
         plans = SubscriptionPlan.objects.filter(
             is_active=True
         ).annotate(
@@ -104,8 +227,6 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         """Filtrer les abonnements selon le rôle"""
         if self.request.user.is_staff:
             return Subscription.objects.all()
-        
-        # Propriétaires voient uniquement leurs abonnements
         return Subscription.objects.filter(user=self.request.user)
     
     def get_serializer_class(self):
@@ -151,14 +272,12 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         """Statut complet de l'abonnement utilisateur"""
         user = request.user
         
-        # Récupérer l'abonnement actif
         subscription = Subscription.objects.filter(
             user=user,
             status__in=['trial', 'active'],
             end_date__gt=timezone.now()
         ).first()
         
-        # Compter les annonces actuelles
         current_listings = Listing.objects.filter(owner=user).count()
         
         if subscription:
@@ -194,7 +313,6 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         """Annuler un abonnement"""
         subscription = self.get_object()
         
-        # Vérifier que c'est l'utilisateur propriétaire
         if subscription.user != request.user and not request.user.is_staff:
             return Response(
                 {'error': 'Vous n\'êtes pas autorisé à annuler cet abonnement'},
@@ -211,6 +329,15 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         subscription.auto_renew = False
         subscription.save()
         
+        # Notification
+        create_notification(
+            user=subscription.user,
+            notification_type='subscription_expiring',
+            title='Abonnement annulé',
+            message=f'Votre abonnement {subscription.plan.name} a été annulé.',
+            link=f'/subscriptions/{subscription.id}'
+        )
+        
         return Response({
             'message': 'Abonnement annulé avec succès',
             'data': SubscriptionDetailSerializer(
@@ -224,14 +351,12 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
         """Renouveler un abonnement expiré"""
         old_subscription = self.get_object()
         
-        # Vérifier que c'est l'utilisateur propriétaire
         if old_subscription.user != request.user and not request.user.is_staff:
             return Response(
                 {'error': 'Vous n\'êtes pas autorisé à renouveler cet abonnement'},
                 status=status.HTTP_403_FORBIDDEN
             )
         
-        # Vérifier qu'il n'y a pas déjà un abonnement actif
         active_subscription = Subscription.objects.filter(
             user=request.user,
             status__in=['trial', 'active'],
@@ -244,14 +369,13 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Créer un nouvel abonnement avec le même plan
         start_date = timezone.now()
         end_date = start_date + relativedelta(months=old_subscription.plan.duration_months)
         
         new_subscription = Subscription.objects.create(
             user=request.user,
             plan=old_subscription.plan,
-            status='pending',  # En attente de paiement
+            status='pending',
             start_date=start_date,
             end_date=end_date,
             is_trial=False,
@@ -287,7 +411,7 @@ class SubscriptionViewSet(viewsets.ModelViewSet):
 
 class PaymentViewSet(viewsets.ModelViewSet):
     """
-    ViewSet pour les paiements.
+    ViewSet pour les paiements avec PayDunya.
     - Utilisateurs: voir leurs paiements, initier des paiements
     - Admin: gérer tous les paiements
     """
@@ -296,14 +420,12 @@ class PaymentViewSet(viewsets.ModelViewSet):
     filterset_fields = ['status', 'payment_method', 'subscription']
     ordering_fields = ['created_at', 'paid_at', 'amount']
     ordering = ['-created_at']
-    http_method_names = ['get', 'post']  # Pas de PUT/PATCH/DELETE
+    http_method_names = ['get', 'post']
     
     def get_queryset(self):
         """Filtrer les paiements selon le rôle"""
         if self.request.user.is_staff:
             return Payment.objects.all()
-        
-        # Utilisateurs voient uniquement leurs paiements
         return Payment.objects.filter(subscription__user=self.request.user)
     
     def get_serializer_class(self):
@@ -317,31 +439,54 @@ class PaymentViewSet(viewsets.ModelViewSet):
     
     @action(detail=False, methods=['post'])
     def initiate(self, request):
-        """Initier un paiement"""
+        """Initier un paiement avec PayDunya"""
         serializer = PaymentInitiateSerializer(
             data=request.data,
             context={'request': request}
         )
         
-        if serializer.is_valid():
-            subscription = serializer.validated_data['subscription']
-            payment_method = serializer.validated_data['payment_method']
-            phone_number = serializer.validated_data.get('phone_number')
-            
-            # Générer un ID de transaction unique
-            transaction_id = f"PAY-{uuid.uuid4().hex[:16].upper()}"
-            
-            # Créer le paiement
-            payment = Payment.objects.create(
-                subscription=subscription,
-                amount=subscription.plan.price,
-                payment_method=payment_method,
-                status='pending',
-                transaction_id=transaction_id
-            )
-            
-            # TODO: Intégrer les API de paiement réelles
-            # Pour MTN MoMo, Moov Money, ou carte bancaire
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        subscription = serializer.validated_data['subscription']
+        
+        # Générer un ID de transaction unique
+        transaction_id = f"PAY-{uuid.uuid4().hex[:16].upper()}"
+        
+        # Créer le paiement
+        payment = Payment.objects.create(
+            subscription=subscription,
+            amount=subscription.plan.price,
+            payment_method='paydunya',
+            status='pending',
+            transaction_id=transaction_id
+        )
+        
+        # Initialiser PayDunya
+        paydunya = PayDunyaService()
+        
+        # URLs de callback
+        site_url = getattr(settings, 'SITE_URL', 'http://localhost:8000')
+        callback_url = f"{site_url}/api/v1/payments/callback/"
+        return_url = f"{site_url}/payment/success/{payment.id}/"
+        cancel_url = f"{site_url}/payment/cancel/{payment.id}/"
+        
+        # Créer la facture PayDunya
+        result = paydunya.create_invoice(
+            payment=payment,
+            user=request.user,
+            callback_url=callback_url,
+            return_url=return_url,
+            cancel_url=cancel_url
+        )
+        
+        if result['success']:
+            # Sauvegarder le token PayDunya
+            payment.payment_provider_response = {
+                'token': result['token'],
+                'response_code': result['response_code']
+            }
+            payment.save()
             
             response_data = {
                 'message': 'Paiement initié avec succès',
@@ -349,95 +494,145 @@ class PaymentViewSet(viewsets.ModelViewSet):
                     payment,
                     context={'request': request}
                 ).data,
-                'payment_instructions': self._get_payment_instructions(
-                    payment_method,
-                    phone_number,
-                    subscription.plan.price
-                )
+                'payment_url': result['invoice_url'],
+                'token': result['token']
             }
             
             return Response(response_data, status=status.HTTP_201_CREATED)
-        
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-    
-    def _get_payment_instructions(self, payment_method, phone_number, amount):
-        """Instructions de paiement selon la méthode"""
-        instructions = {
-            'mtn_momo': {
-                'message': 'Vous allez recevoir une demande de paiement sur votre téléphone.',
-                'steps': [
-                    f'Composez #150# sur votre téléphone {phone_number}',
-                    'Confirmez le paiement',
-                    f'Montant: {amount} FCFA'
-                ]
-            },
-            'moov_money': {
-                'message': 'Vous allez recevoir une demande de paiement sur votre téléphone.',
-                'steps': [
-                    f'Composez *155# sur votre téléphone {phone_number}',
-                    'Confirmez le paiement',
-                    f'Montant: {amount} FCFA'
-                ]
-            },
-            'card': {
-                'message': 'Vous serez redirigé vers la page de paiement sécurisée.',
-                'steps': [
-                    'Entrez les informations de votre carte',
-                    'Confirmez le paiement',
-                    f'Montant: {amount} FCFA'
-                ]
-            }
-        }
-        
-        return instructions.get(payment_method, {})
-    
-    @action(detail=False, methods=['post'])
-    def callback(self, request):
-        """Callback des prestataires de paiement (webhook)"""
-        serializer = PaymentCallbackSerializer(data=request.data)
-        
-        if serializer.is_valid():
-            transaction_id = serializer.validated_data['transaction_id']
-            callback_status = serializer.validated_data['status']
-            provider_response = serializer.validated_data.get('provider_response', {})
+        else:
+            payment.status = 'failed'
+            payment.payment_provider_response = result
+            payment.save()
             
-            try:
-                payment = Payment.objects.get(transaction_id=transaction_id)
-                
-                if callback_status == 'success':
-                    payment.status = 'completed'
-                    payment.paid_at = timezone.now()
-                    payment.payment_provider_response = provider_response
-                    payment.save()
-                    
-                    # Activer l'abonnement
-                    subscription = payment.subscription
-                    subscription.status = 'active'
-                    subscription.save()
-                    
-                    # TODO: Envoyer notification de confirmation
-                    
-                    return Response({
-                        'message': 'Paiement confirmé avec succès',
-                        'payment_id': payment.id
-                    })
-                else:
-                    payment.status = 'failed'
-                    payment.payment_provider_response = provider_response
-                    payment.save()
-                    
-                    return Response({
-                        'message': 'Paiement échoué',
-                        'payment_id': payment.id
-                    })
-                
-            except Payment.DoesNotExist:
-                return Response(
-                    {'error': 'Transaction introuvable'},
-                    status=status.HTTP_404_NOT_FOUND
-                )
+            return Response({
+                'error': 'Erreur lors de l\'initialisation du paiement',
+                'details': result.get('error')
+            }, status=status.HTTP_400_BAD_REQUEST)
+    
+    @action(detail=False, methods=['post', 'get'], permission_classes=[AllowAny])
+    def callback(self, request):
+        """Callback PayDunya (webhook)"""
+        # PayDunya envoie le token dans les paramètres
+        token = request.data.get('token') or request.query_params.get('token')
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        if not token:
+            return Response(
+                {'error': 'Token manquant'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Vérifier le statut auprès de PayDunya
+        paydunya = PayDunyaService()
+        result = paydunya.confirm_invoice(token)
+        
+        if not result['success']:
+            return Response(
+                {'error': 'Erreur lors de la vérification du paiement'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Récupérer le payment_id des custom_data
+        custom_data = result.get('custom_data', {})
+        payment_id = custom_data.get('payment_id')
+        
+        if not payment_id:
+            return Response(
+                {'error': 'ID de paiement introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        try:
+            payment = Payment.objects.get(id=payment_id)
+            
+            # Statut PayDunya: completed, pending, cancelled
+            paydunya_status = result.get('status', '').lower()
+            
+            if paydunya_status == 'completed':
+                payment.status = 'completed'
+                payment.paid_at = timezone.now()
+                payment.payment_provider_response = result
+                payment.save()
+                
+                # Activer l'abonnement
+                subscription = payment.subscription
+                subscription.status = 'active'
+                subscription.save()
+                
+                # Notification de succès
+                create_notification(
+                    user=subscription.user,
+                    notification_type='subscription_expiring',
+                    title='Paiement confirmé',
+                    message=f'Votre paiement de {payment.amount} FCFA a été confirmé. Votre abonnement {subscription.plan.name} est maintenant actif.',
+                    link=f'/subscriptions/{subscription.id}'
+                )
+                
+                return Response({
+                    'message': 'Paiement confirmé avec succès',
+                    'payment_id': payment.id
+                })
+                
+            elif paydunya_status == 'cancelled':
+                payment.status = 'failed'
+                payment.payment_provider_response = result
+                payment.save()
+                
+                # Notification d'échec
+                create_notification(
+                    user=payment.subscription.user,
+                    notification_type='subscription_expiring',
+                    title='Paiement annulé',
+                    message='Votre paiement a été annulé. Veuillez réessayer.',
+                    link=f'/payments/{payment.id}'
+                )
+                
+                return Response({
+                    'message': 'Paiement annulé',
+                    'payment_id': payment.id
+                })
+            else:
+                # Statut en attente ou autre
+                payment.payment_provider_response = result
+                payment.save()
+                
+                return Response({
+                    'message': 'Paiement en cours de traitement',
+                    'payment_id': payment.id,
+                    'status': paydunya_status
+                })
+            
+        except Payment.DoesNotExist:
+            return Response(
+                {'error': 'Paiement introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+    
+    @action(detail=True, methods=['get'])
+    def verify(self, request, pk=None):
+        """Vérifier le statut d'un paiement auprès de PayDunya"""
+        payment = self.get_object()
+        
+        if not payment.payment_provider_response or 'token' not in payment.payment_provider_response:
+            return Response(
+                {'error': 'Token PayDunya introuvable'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        token = payment.payment_provider_response['token']
+        paydunya = PayDunyaService()
+        result = paydunya.confirm_invoice(token)
+        
+        if result['success']:
+            return Response({
+                'payment_id': payment.id,
+                'paydunya_status': result.get('status'),
+                'response': result
+            })
+        else:
+            return Response({
+                'error': 'Erreur lors de la vérification',
+                'details': result.get('error')
+            }, status=status.HTTP_400_BAD_REQUEST)
     
     @action(detail=True, methods=['post'], permission_classes=[IsAuthenticated, IsAdmin])
     def update_status(self, request, pk=None):
@@ -449,24 +644,33 @@ class PaymentViewSet(viewsets.ModelViewSet):
             partial=True
         )
         
-        if serializer.is_valid():
-            serializer.save()
-            
-            # Si le paiement est complété, activer l'abonnement
-            if serializer.validated_data.get('status') == 'completed':
-                subscription = payment.subscription
-                subscription.status = 'active'
-                subscription.save()
-            
-            return Response({
-                'message': 'Statut du paiement mis à jour',
-                'data': PaymentDetailSerializer(
-                    payment,
-                    context={'request': request}
-                ).data
-            })
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        serializer.save()
+        
+        # Si le paiement est complété, activer l'abonnement
+        if serializer.validated_data.get('status') == 'completed':
+            subscription = payment.subscription
+            subscription.status = 'active'
+            subscription.save()
+            
+            # Notification
+            create_notification(
+                user=subscription.user,
+                notification_type='subscription_expiring',
+                title='Abonnement activé',
+                message=f'Votre abonnement {subscription.plan.name} est maintenant actif.',
+                link=f'/subscriptions/{subscription.id}'
+            )
+        
+        return Response({
+            'message': 'Statut du paiement mis à jour',
+            'data': PaymentDetailSerializer(
+                payment,
+                context={'request': request}
+            ).data
+        })
     
     @action(detail=False, methods=['get'])
     def my_payments(self, request):
@@ -485,7 +689,6 @@ class PaymentViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], permission_classes=[IsAuthenticated, IsAdmin])
     def statistics(self, request):
         """Statistiques des paiements (Admin)"""
-        # Filtrer par période si fournie
         start_date = request.query_params.get('start_date')
         end_date = request.query_params.get('end_date')
         
@@ -541,7 +744,6 @@ class SubscriptionAdminViewSet(viewsets.ViewSet):
         now = timezone.now()
         first_day_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         
-        # Statistiques des abonnements
         total_subscriptions = Subscription.objects.count()
         active_subscriptions = Subscription.objects.filter(
             status__in=['trial', 'active'],
@@ -555,7 +757,6 @@ class SubscriptionAdminViewSet(viewsets.ViewSet):
             status='expired'
         ).count()
         
-        # Revenus
         total_revenue = Payment.objects.filter(
             status='completed'
         ).aggregate(Sum('amount'))['amount__sum'] or 0
@@ -565,7 +766,6 @@ class SubscriptionAdminViewSet(viewsets.ViewSet):
             paid_at__gte=first_day_of_month
         ).aggregate(Sum('amount'))['amount__sum'] or 0
         
-        # Taux de conversion (essai -> payant)
         trials = Subscription.objects.filter(is_trial=True).count()
         paid = Subscription.objects.filter(is_trial=False, status='active').count()
         conversion_rate = (paid / trials * 100) if trials > 0 else 0

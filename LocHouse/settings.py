@@ -57,6 +57,7 @@ AUTH_USER_MODEL = 'accounts.User'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'rest_framework.authentication.SessionAuthentication',
     ),
     'DEFAULT_PERMISSION_CLASSES': (
         'rest_framework.permissions.IsAuthenticated',
@@ -83,6 +84,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    'listings.middleware.PropertyGroupLimitMiddleware',
 ]
 
 ROOT_URLCONF = 'LocHouse.urls'
@@ -205,20 +207,42 @@ EMAIL_USE_SSL = False
 DEFAULT_FROM_EMAIL = 'lochouse@assitance.com'
 
 
+###################################
 # Configuration des paiements
-PAYMENT_CONFIG = {
-    'MTN_MOMO': {
-        'API_KEY': 'votre_clé',
-        'API_SECRET': 'votre_secret',
-        'BASE_URL': 'https://api.mtn.com/...'
+###################################
+
+
+# Clés PayDunya (à mettre dans vos variables d'environnement)
+PAYDUNYA_MASTER_KEY = os.getenv('PAYDUNYA_MASTER_KEY', 'your-master-key')
+PAYDUNYA_PRIVATE_KEY = os.getenv('PAYDUNYA_PRIVATE_KEY', 'your-private-key')
+PAYDUNYA_TOKEN = os.getenv('PAYDUNYA_TOKEN', 'your-token')
+
+# Mode: 'test' ou 'live'
+PAYDUNYA_MODE = os.getenv('PAYDUNYA_MODE', 'test')
+
+# Informations de la boutique
+PAYDUNYA_STORE_NAME = os.getenv('PAYDUNYA_STORE_NAME', 'LOMIMO')
+PAYDUNYA_STORE_TAGLINE = os.getenv('PAYDUNYA_STORE_TAGLINE', 'Plateforme de location immobilière')
+
+# URL du site (pour les callbacks)
+SITE_URL = os.getenv('SITE_URL', 'http://localhost:8000')
+
+
+
+
+
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': False,
+    'handlers': {
+        'console': {
+            'class': 'logging.StreamHandler',
+        },
     },
-    'MOOV_MONEY': {
-        'API_KEY': 'votre_clé',
-        'API_SECRET': 'votre_secret',
-        'BASE_URL': 'https://api.moov.com/...'
+    'loggers': {
+        'listings.middleware': {
+            'handlers': ['console'],
+            'level': 'DEBUG',
+        },
     },
-    'STRIPE': {
-        'PUBLIC_KEY': 'pk_...',
-        'SECRET_KEY': 'sk_...'
-    }
 }

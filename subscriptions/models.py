@@ -46,31 +46,83 @@ class Subscription(models.Model):
         return self.status == 'active' and timezone.now() < self.end_date
 
 
+
+
 class Payment(models.Model):
-    """Paiements d'abonnements"""
+    """Modèle de paiement"""
+    
     PAYMENT_METHOD_CHOICES = (
-        ('mtn_momo', 'MTN Mobile Money'),
-        ('moov_money', 'Moov Money'),
-        ('card', 'Carte bancaire'),
+        ('paydunya', 'PayDunya'),  # Méthode unique pour PayDunya
+        # PayDunya supporte: MTN Mobile Money, Moov Money, Orange Money, Cartes bancaires
     )
     
     STATUS_CHOICES = (
         ('pending', 'En attente'),
         ('completed', 'Complété'),
         ('failed', 'Échoué'),
-        ('refunded', 'Remboursé'),
+        ('cancelled', 'Annulé'),
     )
     
-    subscription = models.ForeignKey(Subscription, on_delete=models.CASCADE, related_name='payments')
+    subscription = models.ForeignKey(
+        'Subscription',
+        on_delete=models.CASCADE,
+        related_name='payments'
+    )
     amount = models.DecimalField(max_digits=10, decimal_places=2)
-    payment_method = models.CharField(max_length=20, choices=PAYMENT_METHOD_CHOICES)
-    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default='pending')
-    transaction_id = models.CharField(max_length=200, unique=True)
-    payment_provider_response = models.JSONField(blank=True, null=True)
+    payment_method = models.CharField(
+        max_length=20,
+        choices=PAYMENT_METHOD_CHOICES
+    )
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='pending'
+    )
+    transaction_id = models.CharField(max_length=100, unique=True)
+    payment_provider_response = models.JSONField(
+        blank=True,
+        null=True,
+        help_text="Réponse complète de PayDunya"
+    )
     paid_at = models.DateTimeField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['-created_at']),
+            models.Index(fields=['transaction_id']),
+            models.Index(fields=['status']),
+        ]
     
     def __str__(self):
-        return f"Paiement {self.transaction_id} - {self.amount} FCFA"
+        return f"Payment {self.transaction_id} - {self.status}"
+    
+    @property
+    def is_completed(self):
+        """Vérifie si le paiement est complété"""
+        return self.status == 'completed'
+    
+    @property
+    def is_pending(self):
+        """Vérifie si le paiement est en attente"""
+        return self.status == 'pending'
+    
+    @property
+    def paydunya_token(self):
+        """Récupère le token PayDunya de la réponse"""
+        if self.payment_provider_response:
+            return self.payment_provider_response.get('token')
+        return None
+    
+    @property
+    def paydunya_receipt_url(self):
+        """Récupère l'URL du reçu PayDunya"""
+        if self.payment_provider_response:
+            return self.payment_provider_response.get('receipt_url')
+        return None
+
+
 
 

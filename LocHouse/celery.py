@@ -130,6 +130,14 @@ app.conf.beat_schedule = {
             'expires': 7200,
         }
     },
+
+    'cleanup-expired-property-groups': {
+        'task': 'core.tasks.cleanup_expired_property_groups',
+        'schedule': crontab(hour=2, minute=0),  # Quotidien à 2h00
+        'options': {
+            'expires': 3600,  # Expire après 1h si non exécutée
+        }
+    },
 }
 
 

@@ -1,221 +1,267 @@
+""
+============================================================================
+DOCUMENTATION DES ENDPOINTS
+============================================================================
 
-# ============================================================================
-# ENDPOINTS - interactions
-# ============================================================================
+# -------------------------------------------------------------------------
+# AVAILABILITY REQUESTS (Demandes de disponibilité)
+# -------------------------------------------------------------------------
 
-"""
-# DEMANDES DE DISPONIBILITÉ (NOUVELLE FONCTIONNALITÉ)
-POST   /api/interactions/availability-request/      - Envoyer demande disponibilité
-GET    /api/interactions/my-requests/               - Mes demandes (locataire)
-GET    /api/interactions/received-requests/         - Demandes reçues (propriétaire)
-PATCH  /api/interactions/requests/{id}/status/      - Marquer comme contacté
+## Endpoints de base (CRUD)
+GET     /api/availability-requests/                    - Liste des demandes (filtrées selon user)
+POST    /api/availability-requests/                    - Créer une demande (locataire)
+GET     /api/availability-requests/{id}/               - Détail d'une demande
+PUT     /api/availability-requests/{id}/               - Modifier une demande (propriétaire du request)
+DELETE  /api/availability-requests/{id}/               - Supprimer une demande
 
-# MESSAGES
-POST   /api/interactions/messages/                  - Envoyer message
-GET    /api/interactions/messages/{listing_id}/     - Conversation pour une annonce
-GET    /api/interactions/conversations/             - Liste conversations
+## Endpoints personnalisés
+GET     /api/availability-requests/my_requests/        - Mes demandes (locataire)
+GET     /api/availability-requests/received_requests/  - Demandes reçues (propriétaire)
+PATCH   /api/availability-requests/{id}/update_status/ - Changer statut (propriétaire du listing)
 
-# AVIS
-POST   /api/interactions/reviews/                   - Poster avis
-GET    /api/interactions/reviews/{listing_id}/      - Avis d'une annonce
-GET    /api/interactions/my-reviews/                - Mes avis
+## Exemples de requêtes
 
-# ADMIN
-GET    /api/admin/reviews/pending/                  - Avis en attente
-PATCH  /api/admin/reviews/{id}/approve/             - Approuver avis
-PATCH  /api/admin/reviews/{id}/reject/              - Rejeter avis
+### Créer une demande de disponibilité
+POST /api/availability-requests/
+{
+    "listing": 123,
+    "requester_phone": "+229 97 00 00 00",
+    "message": "Bonjour, je suis intéressé par cette chambre...",
+    "check_in_date": "2025-12-01",
+    "check_out_date": "2025-12-05",
+    "guests_count": 2
+}
 
-# FAVORIS
-POST   /api/interactions/favorites/                 - Ajouter favori
-GET    /api/interactions/favorites/                 - Mes favoris
-DELETE /api/interactions/favorites/{id}/            - Retirer favori
-"""
+### Mettre à jour le statut (propriétaire)
+PATCH /api/availability-requests/45/update_status/
+{
+    "status": "contacted"  # ou "closed"
+}
 
-"""
-
-"""
-AVAILABILITY REQUESTS ENDPOINTS:
---------------------------------
-GET     /api/interactions/availability-requests/                      - Liste des demandes (selon rôle)
-POST    /api/interactions/availability-requests/                      - Créer une demande (locataire)
-GET     /api/interactions/availability-requests/{id}/                 - Détails d'une demande
-PUT     /api/interactions/availability-requests/{id}/                 - Modifier une demande
-PATCH   /api/interactions/availability-requests/{id}/                 - Modifier partiellement
-DELETE  /api/interactions/availability-requests/{id}/                 - Supprimer une demande
-
-GET     /api/interactions/availability-requests/my_requests/          - Mes demandes (locataire)
-GET     /api/interactions/availability-requests/received_requests/    - Demandes reçues (propriétaire)
-POST    /api/interactions/availability-requests/{id}/update_status/   - Mettre à jour le statut
+### Filtrer les demandes
+GET /api/availability-requests/?status=pending&listing=123
 
 
-CONTACT MESSAGES ENDPOINTS:
----------------------------
-GET     /api/interactions/contact-messages/                           - Liste des messages
-POST    /api/interactions/contact-messages/                           - Envoyer un message
-GET     /api/interactions/contact-messages/{id}/                      - Détails d'un message
-DELETE  /api/interactions/contact-messages/{id}/                      - Supprimer un message
+# -------------------------------------------------------------------------
+# CONTACT MESSAGES (Messages de contact)
+# -------------------------------------------------------------------------
 
-GET     /api/interactions/contact-messages/conversations/             - Liste des conversations
-GET     /api/interactions/contact-messages/by_listing/                - Messages d'une conversation
-GET     /api/interactions/contact-messages/unread_count/              - Nombre de non lus
+## Endpoints de base (CRUD)
+GET     /api/messages/                                  - Liste des messages
+POST    /api/messages/                                  - Envoyer un message
+GET     /api/messages/{id}/                             - Détail d'un message
+DELETE  /api/messages/{id}/                             - Supprimer un message
 
+## Endpoints personnalisés
+GET     /api/messages/conversations/                    - Liste des conversations groupées
+GET     /api/messages/conversation_detail/              - Détail d'une conversation (+ listing_id)
+PATCH   /api/messages/{id}/mark_as_read/                - Marquer comme lu
+GET     /api/messages/unread_count/                     - Nombre de messages non lus
 
-REVIEWS ENDPOINTS:
-------------------
-GET     /api/interactions/reviews/                                    - Liste des avis (approuvés)
-POST    /api/interactions/reviews/                                    - Créer un avis
-GET     /api/interactions/reviews/{id}/                               - Détails d'un avis
-PUT     /api/interactions/reviews/{id}/                               - Modifier un avis (auteur)
-PATCH   /api/interactions/reviews/{id}/                               - Modifier partiellement
-DELETE  /api/interactions/reviews/{id}/                               - Supprimer un avis (auteur)
+## Exemples de requêtes
 
-GET     /api/interactions/reviews/my_reviews/                         - Mes avis
-GET     /api/interactions/reviews/by_listing/                         - Avis d'une annonce
-POST    /api/interactions/reviews/{id}/moderate/                      - Modérer un avis (admin)
-GET     /api/interactions/reviews/pending_reviews/                    - Avis en attente (admin)
-GET     /api/interactions/reviews/statistics/                         - Statistiques des avis
+### Envoyer un message
+POST /api/messages/
+{
+    "listing": 123,
+    "message": "Bonjour, est-ce que la chambre est disponible du 1er au 5 décembre?"
+}
+Réponse : Si c'est le premier message, le contact du propriétaire sera révélé dans "owner_contact"
 
+### Voir une conversation
+GET /api/messages/conversation_detail/?listing_id=123
 
-FAVORITES ENDPOINTS:
---------------------
-GET     /api/interactions/favorites/                                  - Mes favoris
-POST    /api/interactions/favorites/                                  - Ajouter un favori
-DELETE  /api/interactions/favorites/{id}/                             - Supprimer un favori
-
-POST    /api/interactions/favorites/toggle/                           - Ajouter/retirer (toggle)
-GET     /api/interactions/favorites/check/                            - Vérifier si favori
+### Nombre de messages non lus
+GET /api/messages/unread_count/
+Réponse : {"unread_count": 5}
 
 
-EXEMPLES D'UTILISATION:
------------------------
+# -------------------------------------------------------------------------
+# REVIEWS (Avis et commentaires)
+# -------------------------------------------------------------------------
 
-1. Créer une demande de disponibilité:
-   POST /api/interactions/availability-requests/
-   Body: {
-       "listing": 42,
-       "requester_phone": "+22961234567",
-       "message": "Je suis intéressé par cette annonce...",
-       "check_in_date": "2025-12-01",
-       "check_out_date": "2025-12-05",
-       "guests_count": 2
-   }
+## Endpoints de base (CRUD)
+GET     /api/reviews/                                   - Liste des avis (approuvés pour public)
+POST    /api/reviews/                                   - Créer un avis (locataire)
+GET     /api/reviews/{id}/                              - Détail d'un avis
+PUT     /api/reviews/{id}/                              - Modifier un avis (auteur)
+DELETE  /api/reviews/{id}/                              - Supprimer un avis
 
-2. Voir les demandes reçues (propriétaire):
-   GET /api/interactions/availability-requests/received_requests/
+## Endpoints personnalisés
+GET     /api/reviews/my_reviews/                        - Mes avis
+GET     /api/reviews/listing_stats/                     - Statistiques d'un listing (+ listing_id)
+GET     /api/reviews/pending_reviews/                   - Avis en attente (admin)
+PATCH   /api/reviews/{id}/moderate/                     - Modérer un avis (admin)
 
-3. Mettre à jour le statut d'une demande:
-   POST /api/interactions/availability-requests/15/update_status/
-   Body: {"status": "contacted"}
+## Exemples de requêtes
 
-4. Envoyer un message au propriétaire:
-   POST /api/interactions/contact-messages/
-   Body: {
-       "listing": 42,
-       "receiver": 10,
-       "message": "Bonjour, l'annonce est-elle toujours disponible ?"
-   }
+### Créer un avis
+POST /api/reviews/
+{
+    "listing": 123,
+    "rating": 5,
+    "comment": "Excellent séjour, très propre et bien situé!"
+}
+Note : L'avis sera en statut "pending" jusqu'à validation admin
 
-5. Voir les conversations:
-   GET /api/interactions/contact-messages/conversations/
+### Modérer un avis (admin)
+PATCH /api/reviews/45/moderate/
+{
+    "status": "approved"
+}
+ou
+{
+    "status": "rejected",
+    "rejection_reason": "Contenu inapproprié"
+}
 
-6. Voir les messages d'une conversation spécifique:
-   GET /api/interactions/contact-messages/by_listing/?listing_id=42
-
-7. Nombre de messages non lus:
-   GET /api/interactions/contact-messages/unread_count/
-
-8. Créer un avis:
-   POST /api/interactions/reviews/
-   Body: {
-       "listing": 42,
-       "rating": 5,
-       "comment": "Excellent logement, très propre et bien situé..."
-   }
-
-9. Voir les avis d'une annonce avec statistiques:
-   GET /api/interactions/reviews/by_listing/?listing_id=42
-
-10. Statistiques détaillées des avis:
-    GET /api/interactions/reviews/statistics/?listing_id=42
-
-11. Modérer un avis (admin):
-    POST /api/interactions/reviews/25/moderate/
-    Body: {"status": "approved"}
-    OU
-    Body: {
-        "status": "rejected",
-        "rejection_reason": "Contenu inapproprié"
+### Statistiques d'un listing
+GET /api/reviews/listing_stats/?listing_id=123
+Réponse :
+{
+    "average_rating": 4.5,
+    "total_reviews": 10,
+    "rating_distribution": {
+        "rating_1": 0,
+        "rating_2": 1,
+        "rating_3": 2,
+        "rating_4": 3,
+        "rating_5": 4
     }
+}
 
-12. Avis en attente de modération (admin):
-    GET /api/interactions/reviews/pending_reviews/
-
-13. Ajouter aux favoris:
-    POST /api/interactions/favorites/
-    Body: {"listing": 42}
-
-14. Toggle favori (ajouter ou retirer):
-    POST /api/interactions/favorites/toggle/
-    Body: {"listing_id": 42}
-
-15. Vérifier si une annonce est favorite:
-    GET /api/interactions/favorites/check/?listing_id=42
-
-16. Liste de mes favoris:
-    GET /api/interactions/favorites/
+### Filtrer les avis
+GET /api/reviews/?listing=123&status=approved&ordering=-created_at
 
 
-FILTRES DISPONIBLES (Query Parameters):
----------------------------------------
+# -------------------------------------------------------------------------
+# FAVORITES (Favoris)
+# -------------------------------------------------------------------------
 
-Pour les demandes de disponibilité:
-- status: pending, contacted, closed
-- listing: ID de l'annonce
-- ordering: created_at, check_in_date
+## Endpoints de base
+GET     /api/favorites/                                 - Liste de mes favoris
+POST    /api/favorites/                                 - Ajouter un favori
+DELETE  /api/favorites/{id}/                            - Retirer un favori
 
-Pour les messages:
-- listing: ID de l'annonce
-- is_read: true, false
+## Endpoints personnalisés
+POST    /api/favorites/toggle/                          - Ajouter/retirer (toggle)
+GET     /api/favorites/check/                           - Vérifier si en favoris (+ listing_id)
 
-Pour les avis:
-- listing: ID de l'annonce
-- rating: 1, 2, 3, 4, 5
-- status: pending, approved, rejected
-- ordering: created_at, rating
+## Exemples de requêtes
+
+### Ajouter aux favoris
+POST /api/favorites/
+{
+    "listing": 123
+}
+
+### Toggle favori (plus pratique)
+POST /api/favorites/toggle/
+{
+    "listing": 123
+}
+Réponse : {"message": "Ajouté aux favoris", "is_favorite": true}
+ou {"message": "Retiré des favoris", "is_favorite": false}
+
+### Vérifier si un listing est en favoris
+GET /api/favorites/check/?listing_id=123
+Réponse : {"is_favorite": true}
 
 
-LOGIQUE MÉTIER IMPORTANTE:
----------------------------
+# -------------------------------------------------------------------------
+# FILTRES ET RECHERCHE
+# -------------------------------------------------------------------------
 
-1. DEMANDES DE DISPONIBILITÉ:
-   - Les locataires créent des demandes
-   - Les propriétaires voient les demandes pour leurs annonces
-   - Les propriétaires peuvent changer le statut (pending -> contacted -> closed)
-   - Notifications envoyées si PropertyGroup.notifications_enabled = True
+## Filtres disponibles pour tous les endpoints
 
-2. MESSAGES DE CONTACT:
-   - Le premier message marque is_first_contact = True
-   - Après le premier contact, les infos de contact du propriétaire sont révélées
-   - Les messages marquent automatiquement is_read = True quand lus par le destinataire
-   - Respect des préférences de notification par groupe
+### AvailabilityRequests
+- status : pending, contacted, closed
+- listing : ID du listing
+- ordering : created_at, check_in_date (avec - pour décroissant)
+- search : recherche dans message et listing__title
 
-3. AVIS ET COMMENTAIRES:
-   - Un utilisateur ne peut laisser qu'un seul avis par annonce
-   - Les avis sont en attente de modération (status: pending)
-   - Seuls les avis approuvés sont visibles publiquement
-   - Les auteurs peuvent modifier/supprimer leurs avis avant approbation
-   - Après approbation, l'admin doit modifier le statut pour permettre la modification
+### Messages
+- listing : ID du listing
+- is_read : true/false
+- ordering : created_at
 
-4. FAVORIS:
-   - Un utilisateur ne peut ajouter qu'une fois la même annonce
-   - La fonction toggle() permet d'ajouter/retirer facilement
-   - La fonction check() permet de vérifier l'état favori d'une annonce
+### Reviews
+- listing : ID du listing
+- status : pending, approved, rejected
+- rating : 1-5
+- ordering : created_at, rating
 
-5. PERMISSIONS:
-   - Public: Voir les avis approuvés
-   - Locataires authentifiés: Créer demandes, messages, avis, gérer favoris
-   - Propriétaires: Voir/gérer les demandes reçues, répondre aux messages
-   - Admin: Modérer les avis, voir toutes les interactions
-"""
+### Favorites
+- Pas de filtres (toujours les favoris de l'utilisateur)
 
+## Exemples de requêtes avec filtres
+GET /api/availability-requests/?status=pending&ordering=-created_at
+GET /api/reviews/?listing=123&status=approved&rating=5
+GET /api/messages/?is_read=false
+
+
+# -------------------------------------------------------------------------
+# PERMISSIONS ET SÉCURITÉ
+# -------------------------------------------------------------------------
+
+## Règles de permissions
+
+### AvailabilityRequests
+- Locataires : peuvent créer et voir leurs demandes
+- Propriétaires : peuvent voir les demandes pour leurs listings et changer le statut
+- Admin : accès complet
+
+### Messages
+- Locataires et Propriétaires : peuvent envoyer/recevoir des messages
+- Chaque user voit uniquement les messages où il est sender ou receiver
+- Le contact du propriétaire est révélé après le premier message
+
+### Reviews
+- Public : peut voir les avis approuvés (sans authentification)
+- Locataires : peuvent créer et voir leurs avis
+- Propriétaires : peuvent voir les avis approuvés + avis sur leurs listings
+- Admin : peuvent modérer tous les avis
+
+### Favorites
+- Utilisateurs authentifiés uniquement
+- Chaque user voit uniquement ses propres favoris
+
+## Notifications
+- Respecte PropertyGroup.notifications_enabled
+- Si désactivé, aucune notification n'est envoyée pour ce groupe
+- Exceptions : notifications critiques (admin) toujours envoyées
+
+
+# -------------------------------------------------------------------------
+# CODES DE STATUT HTTP
+# -------------------------------------------------------------------------
+
+200 OK                  - Requête réussie
+201 Created             - Ressource créée avec succès
+204 No Content          - Suppression réussie
+400 Bad Request         - Données invalides
+401 Unauthorized        - Authentication requise
+403 Forbidden           - Permissions insuffisantes
+404 Not Found           - Ressource non trouvée
+500 Internal Error      - Erreur serveur
+
+
+# -------------------------------------------------------------------------
+# PAGINATION
+# -------------------------------------------------------------------------
+
+Toutes les listes sont paginées par défaut.
+Format de réponse :
+{
+    "count": 100,
+    "next": "http://api.example.com/api/reviews/?page=2",
+    "previous": null,
+    "results": [...]
+}
+
+Paramètres :
+- page : numéro de page (défaut: 1)
+- page_size : nombre d'éléments par page (max: 100)
+
+Exemple : GET /api/reviews/?page=2&page_size=20
 """

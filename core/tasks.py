@@ -465,3 +465,118 @@ Système LocHouse
         'total_contacts': monthly_analytics['total_contacts'] or 0,
         'admins_notified': len(admin_emails)
     }
+
+
+
+@shared_task
+def cleanup_expired_property_groups():
+    """
+    Nettoie les PropertyGroup des utilisateurs dont l'essai gratuit ou l'abonnement a expiré
+    
+    Règles de suppression:
+    - Utilisateurs sans abonnement actif ET inscription > 30 jours
+    - Utilisateurs avec abonnement expiré
+    
+    Exécution recommandée: Quotidienne à 2h00
+    """
+    from django.utils import timezone
+    from datetime import timedelta
+    from accounts.models import User
+    from listings.models import PropertyGroup
+    from subscriptions.models import Subscription
+    
+    FREE_TRIAL_DAYS = 30
+    today = timezone.now()
+    trial_expiry_date = today - timedelta(days=FREE_TRIAL_DAYS)
+    
+    deleted_counts = {
+        'trial_expired': 0,
+        'subscription_expired': 0,
+        'total_groups_deleted': 0,
+        'users_affected': 0
+    }
+    
+    # 1. Nettoyer les PropertyGroup des utilisateurs avec essai gratuit expiré
+    #    (propriétaires inscrits depuis plus de 30 jours sans abonnement actif)
+    
+    trial_expired_users = User.objects.filter(
+        user_type='proprietaire',
+        created_at__lt=trial_expiry_date,
+        is_active=True
+    ).exclude(
+        subscriptions__status='active',
+        subscriptions__end_date__gt=today
+    )
+    
+    for user in trial_expired_users:
+        # Vérifier qu'il n'a vraiment aucun abonnement actif
+        has_active_sub = Subscription.objects.filter(
+            user=user,
+            status='active',
+            end_date__gt=today
+        ).exists()
+        
+        if not has_active_sub:
+            count = PropertyGroup.objects.filter(owner=user).count()
+            if count > 0:
+                PropertyGroup.objects.filter(owner=user).delete()
+                deleted_counts['trial_expired'] += count
+                deleted_counts['users_affected'] += 1
+                
+                # Créer notification pour l'utilisateur
+                from core.models import Notification
+                Notification.objects.create(
+                    user=user,
+                    notification_type='system',
+                    title='⚠️ Groupes de propriétés supprimés',
+                    message=f'Votre période d\'essai gratuit de 30 jours est expirée. '
+                           f'{count} groupe(s) de propriétés ont été supprimés. '
+                           f'Souscrivez à un abonnement pour créer des groupes illimités.',
+                    link='/dashboard/subscriptions'
+                )
+    
+    # 2. Nettoyer les PropertyGroup des utilisateurs avec abonnement expiré
+    
+    expired_subscriptions = Subscription.objects.filter(
+        status='expired',
+        end_date__lt=today
+    ).select_related('user')
+    
+    for subscription in expired_subscriptions:
+        user = subscription.user
+        
+        # Vérifier qu'il n'a pas d'autre abonnement actif
+        has_active_sub = Subscription.objects.filter(
+            user=user,
+            status='active',
+            end_date__gt=today
+        ).exists()
+        
+        if not has_active_sub:
+            count = PropertyGroup.objects.filter(owner=user).count()
+            if count > 0:
+                PropertyGroup.objects.filter(owner=user).delete()
+                deleted_counts['subscription_expired'] += count
+                
+                # Vérifier si déjà comptabilisé dans trial_expired
+                if user not in [u for u in trial_expired_users]:
+                    deleted_counts['users_affected'] += 1
+                
+                # Créer notification
+                from core.models import Notification
+                Notification.objects.create(
+                    user=user,
+                    notification_type='system',
+                    title='⚠️ Abonnement expiré - Groupes supprimés',
+                    message=f'Votre abonnement a expiré. '
+                           f'{count} groupe(s) de propriétés ont été supprimés. '
+                           f'Renouvelez votre abonnement pour retrouver tous vos avantages.',
+                    link='/dashboard/subscriptions/renew'
+                )
+    
+    deleted_counts['total_groups_deleted'] = (
+        deleted_counts['trial_expired'] + 
+        deleted_counts['subscription_expired']
+    )
+    
+    return deleted_counts
