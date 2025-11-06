@@ -8,16 +8,12 @@ from .models import OTPToken, UserSession
 
 User = get_user_model()
 
-
 class UserRegistrationSerializer(serializers.ModelSerializer):
-    """Serializer pour l'inscription"""
-    password = serializers.CharField(write_only=True, required=True, min_length=8)
-    confirm_password = serializers.CharField(write_only=True, required=True)
+    """Serializer pour l'inscription avec authentification OTP uniquement"""
     
     class Meta:
         model = User
-        fields = ['email', 'first_name', 'last_name', 'password', 'confirm_password', 
-                  'user_type', 'phone_number', 'profile_name']
+        fields = ['email', 'first_name', 'last_name', 'user_type', 'phone_number', 'profile_name']
         extra_kwargs = {
             'email': {'required': True},
             'first_name': {'required': True},
@@ -26,35 +22,35 @@ class UserRegistrationSerializer(serializers.ModelSerializer):
         }
     
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        value = value.lower()
+        # Vérifier l'email ET le username (puisque username = email)
+        if User.objects.filter(email=value).exists() or User.objects.filter(username=value).exists():
             raise serializers.ValidationError("Cet email est déjà utilisé.")
-        return value.lower()
+        return value
     
     def validate_user_type(self, value):
         if value not in ['proprietaire', 'locataire']:
             raise serializers.ValidationError("Type d'utilisateur invalide.")
         return value
     
-    def validate(self, attrs):
-        if attrs['password'] != attrs['confirm_password']:
-            raise serializers.ValidationError({"confirm_password": "Les mots de passe ne correspondent pas."})
-        return attrs
-    
     def create(self, validated_data):
-        validated_data.pop('confirm_password')
-        user = User.objects.create_user(
-            username=validated_data['email'],
-            email=validated_data['email'],
+        email = validated_data['email']
+        
+        # Créer l'utilisateur avec username = email
+        user = User(
+            username=email,  # Définir explicitement le username
+            email=email,
             first_name=validated_data['first_name'],
             last_name=validated_data['last_name'],
             user_type=validated_data['user_type'],
             phone_number=validated_data.get('phone_number'),
             profile_name=validated_data.get('profile_name'),
-            password=validated_data['password'],
-            is_active=False  # Sera activé après vérification OTP
+            is_active=False
         )
+        user.set_unusable_password()
+        user.save()
         return user
-
+    
 
 class SendOTPSerializer(serializers.Serializer):
     """Serializer pour envoyer un OTP"""
@@ -93,9 +89,10 @@ class VerifyOTPSerializer(serializers.Serializer):
         email = attrs['email'].lower()
         token = attrs['token']
         
-        try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+        # Use filter().first() instead of get()
+        user = User.objects.filter(email=email).first()
+        
+        if not user:
             raise serializers.ValidationError({"email": "Utilisateur non trouvé."})
         
         # Vérifier l'OTP
@@ -114,8 +111,6 @@ class VerifyOTPSerializer(serializers.Serializer):
         attrs['user'] = user
         attrs['otp'] = otp
         return attrs
-
-
 class UserProfileSerializer(serializers.ModelSerializer):
     """Serializer pour le profil utilisateur"""
     full_name = serializers.SerializerMethodField()
@@ -125,7 +120,7 @@ class UserProfileSerializer(serializers.ModelSerializer):
         fields = ['id', 'email', 'first_name', 'last_name', 'full_name', 'user_type', 
                   'phone_number', 'profile_name', 'is_identity_verified', 
                   'identity_verified_at', 'email_verified', 'created_at', 'updated_at']
-        read_only_fields = ['id', 'email', 'user_type', 'is_identity_verified', 
+        read_only_fields = ['id', 'user_type', 'is_identity_verified', 
                            'identity_verified_at', 'email_verified', 'created_at', 'updated_at']
     
     def get_full_name(self, obj):

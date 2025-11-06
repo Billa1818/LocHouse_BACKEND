@@ -50,6 +50,14 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        
+        # Vérifier si l'utilisateur existe déjà
+        email = serializer.validated_data.get('email')
+        if User.objects.filter(email=email).exists():
+            return Response({
+                'error': 'Un compte avec cet email existe déjà.'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
         user = serializer.save()
         
         # Créer et envoyer l'OTP
@@ -80,11 +88,18 @@ class SendOTPView(generics.GenericAPIView):
         purpose = serializer.validated_data['purpose']
         
         try:
-            user = User.objects.get(email=email)
-        except User.DoesNotExist:
+            # Utiliser filter().first() pour éviter l'erreur MultipleObjectsReturned
+            user = User.objects.filter(email=email).first()
+            
+            if not user:
+                return Response({
+                    'error': 'Aucun compte associé à cet email.'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+        except Exception as e:
             return Response({
-                'error': 'Aucun compte associé à cet email.'
-            }, status=status.HTTP_404_NOT_FOUND)
+                'error': 'Une erreur est survenue.'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
         
         # Créer et envoyer l'OTP
         otp = serializer.create_otp(user)
@@ -94,7 +109,6 @@ class SendOTPView(generics.GenericAPIView):
             'message': f'Code de vérification envoyé à {email}.',
             'expires_in': 600  # 10 minutes en secondes
         }, status=status.HTTP_200_OK)
-
 
 class VerifyOTPView(generics.GenericAPIView):
     """Vue pour vérifier un OTP et obtenir les tokens JWT"""
@@ -364,7 +378,7 @@ class AdminUserViewSet(viewsets.ModelViewSet):
         action_text = 'débloqué' if is_active else 'bloqué'
         
         # Envoyer l'email de notification via Celery
-        send_account_status_email_task.delay(user.id, is_active, action_text, reason)
+        send_account_status_email_task.delay(user.id, is_active, reason)
         
         return Response({
             'message': f'Utilisateur {action_text} avec succès.',

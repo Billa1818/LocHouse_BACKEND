@@ -50,8 +50,6 @@ Crée un nouveau compte utilisateur et envoie un OTP de vérification par email.
   "email": "user@example.com",
   "first_name": "John",
   "last_name": "Doe",
-  "password": "SecurePass123",
-  "confirm_password": "SecurePass123",
   "user_type": "proprietaire",
   "phone_number": "+229xxxxxxxx",
   "profile_name": "Hôtel Dallas"
@@ -62,8 +60,6 @@ Crée un nouveau compte utilisateur et envoie un OTP de vérification par email.
 - `email` (string)
 - `first_name` (string)
 - `last_name` (string)
-- `password` (string, min 8 caractères)
-- `confirm_password` (string)
 - `user_type` (string: 'proprietaire' ou 'locataire')
 
 **Champs optionnels:**

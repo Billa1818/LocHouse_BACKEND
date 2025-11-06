@@ -4,6 +4,7 @@ from . import views
 
 router = DefaultRouter()
 router.register(r'sessions', views.UserSessionViewSet, basename='session')
+router.register(r'admin/users', views.AdminUserViewSet, basename='admin-user')
 
 app_name = 'accounts'
 
